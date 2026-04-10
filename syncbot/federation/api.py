@@ -730,7 +730,7 @@ def dispatch_federation_request(method: str, path: str, body_str: str, headers: 
     Returns ``(status_code, response_dict)``.
 
     Requests without the ``SyncBot-Federation`` User-Agent receive a plain
-    404 identical to API Gateway's response for non-existent paths.
+    404 identical to Lambda Function URL's response for non-existent paths.
     """
     if not _has_federation_user_agent(headers):
         return _NOT_FOUND
