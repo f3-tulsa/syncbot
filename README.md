@@ -38,6 +38,8 @@ In order for the deploy script to work, you need **Git** and **Bash** (on Window
 
 Full prerequisite checks, manual `sam` / Terraform, Slack URLs after deploy, and CI variables: **[docs/DEPLOY.md](docs/DEPLOY.md)**.
 
+> **`.env.example`** → local development (`cp .env.example .env`; see [DEVELOPMENT.md](docs/DEVELOPMENT.md)).
+> **`.env.deploy.example`** → cloud deployments (`cp .env.deploy.example .env.deploy.test`; see [DEPLOY.md](docs/DEPLOY.md)).
 
 ---
 

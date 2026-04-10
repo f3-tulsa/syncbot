@@ -122,7 +122,8 @@ celerybeat.pid
 *.sage.py
 
 # Environments
-.env
+.env*
+!.env*example
 .venv
 env/
 venv/
@@ -170,6 +171,12 @@ syncbot/.oauth-data/
 
 # Cursor
 .cursor/
+
+# Dev tools / caches
+.ruff_cache/
+.poetry/
+.venv*/
+.DS_Store
 
 # Generated deploy artifacts
 slack-manifest_*.json

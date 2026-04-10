@@ -4,6 +4,8 @@ This guide explains **what the guided deploy scripts do**, how to perform the **
 
 **Runtime baseline:** Python 3.12 — keep `pyproject.toml`, `syncbot/requirements.txt`, Lambda/Cloud Run runtimes, and CI aligned.
 
+> **Which env file?** `.env.example` is for **local development** (`cp .env.example .env`; see [DEVELOPMENT.md](DEVELOPMENT.md)). `.env.deploy.example` is for **cloud deployments** (`cp .env.deploy.example .env.deploy.test`; used by `./deploy.sh --env test`).
+
 ---
 
 ## Quick start: root launcher
