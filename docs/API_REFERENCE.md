@@ -1,6 +1,6 @@
 # API Reference
 
-## HTTP Endpoints (API Gateway)
+## HTTP Endpoints (Lambda Function URL / Cloud Run)
 
 All endpoints are served by a single Lambda function. Slack sends requests to the `/slack/*` URLs after you configure the app. The `/api/federation/*` endpoints handle cross-instance communication for external connections.
 

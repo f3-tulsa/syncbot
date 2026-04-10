@@ -26,7 +26,7 @@ From the **repo root**, run the deploy script once for **`test`** and once for *
 | macOS / Linux | `./deploy.sh` |
 | Windows (PowerShell) | `.\deploy.ps1` |
 
-You can also fork the repo, set GitHub variables/secrets, and push to **`test`** or **`prod`** to trigger CI — see [DEPLOYMENT.md](docs/DEPLOYMENT.md).
+You can also fork the repo, set GitHub variables/secrets, and push to **`test`** or **`prod`** to trigger CI — see [DEPLOY.md](docs/DEPLOY.md).
 
 ### Prerequisites
 
@@ -36,7 +36,7 @@ In order for the deploy script to work, you need **Git** and **Bash** (on Window
 
 **GCP:** Terraform, `gcloud`, Python 3, and `curl`. Optional: `gh`.
 
-Full prerequisite checks, manual `sam` / Terraform, Slack URLs after deploy, and CI variables: **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
+Full prerequisite checks, manual `sam` / Terraform, Slack URLs after deploy, and CI variables: **[docs/DEPLOY.md](docs/DEPLOY.md)**.
 
 
 ---
@@ -52,7 +52,7 @@ See **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** for Dev Container, Docker Com
 | Doc | Contents |
 |-----|----------|
 | [USER_GUIDE.md](docs/USER_GUIDE.md) | End-user features (Home tab, syncs, groups) |
-| [DEPLOYMENT.md](docs/DEPLOYMENT.md) | Guided + manual AWS/GCP deploy, CI, GitHub |
+| [DEPLOY.md](docs/DEPLOY.md) | Guided + manual AWS/GCP deploy, CI, GitHub |
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | Local dev, branching for forks, dependencies |
 | [INFRA_CONTRACT.md](docs/INFRA_CONTRACT.md) | Environment variables and platform expectations |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Sync flow, AWS reference architecture |

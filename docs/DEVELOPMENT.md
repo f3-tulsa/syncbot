@@ -1,6 +1,6 @@
 # Development Guide
 
-How to run SyncBot locally (Dev Container, Docker Compose, native Python) and manage dependencies. For **cloud deploy** and CI/CD, see [DEPLOYMENT.md](DEPLOYMENT.md). For runtime env vars in any environment, see [INFRA_CONTRACT.md](INFRA_CONTRACT.md).
+How to run SyncBot locally (Dev Container, Docker Compose, native Python) and manage dependencies. For **cloud deploy** and CI/CD, see [DEPLOY.md](DEPLOY.md). For runtime env vars in any environment, see [INFRA_CONTRACT.md](INFRA_CONTRACT.md).
 
 ## Branching (upstream vs downstream)
 
@@ -9,7 +9,7 @@ The **upstream** repository ([F3Nation-Community/syncbot](https://github.com/F3N
 | Branch | Role |
 |--------|------|
 | **`main`** | Tracks upstream. Use it to merge PRs and to **sync with the upstream repository** (`git pull upstream main`, etc.). |
-| **`test`** / **`prod`** | On your fork, use these for **deployments**: GitHub Actions deploy workflows run on **push** to `test` and `prod` (see [DEPLOYMENT.md](DEPLOYMENT.md)). |
+| **`test`** / **`prod`** | On your fork, use these for **deployments**: GitHub Actions deploy workflows run on **push** to `test` and `prod` (see [DEPLOY.md](DEPLOY.md)). |
 
 Typical flow: develop on a feature branch → open a PR to **`main`** → merge → when ready to deploy, merge **`main`** into **`test`** or **`prod`** on your fork.
 
@@ -74,6 +74,6 @@ echo "# Required for MySQL 8+ caching_sha2_password; pin for reproducible CI (sa
 grep -E "^(pymysql|psycopg2-binary|cryptography)==" syncbot/requirements.txt >> infra/aws/db_setup/requirements.txt
 ```
 
-The root **`./deploy.sh`** dependency-sync menu may run `poetry update` and regenerate both requirements files when Poetry is on your `PATH` (see [DEPLOYMENT.md](DEPLOYMENT.md)).
+The root **`./deploy.sh`** dependency-sync menu may run `poetry update` and regenerate both requirements files when Poetry is on your `PATH` (see [DEPLOY.md](DEPLOY.md)).
 
 The AWS deploy workflow runs **`pip-audit`** on `syncbot/requirements.txt` and `infra/aws/db_setup/requirements.txt` (see [.github/workflows/deploy-aws.yml](../.github/workflows/deploy-aws.yml)). CI verifies both files match `poetry.lock` (see [.github/workflows/ci.yml](../.github/workflows/ci.yml)).
