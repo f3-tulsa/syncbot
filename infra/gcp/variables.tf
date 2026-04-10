@@ -1,7 +1,7 @@
 # GCP Terraform variables for SyncBot (see docs/INFRA_CONTRACT.md)
 #
 # Sections: project / region / stage → database mode → Cloud Run → keep-warm →
-# Secret Manager IDs and scope envs → optional overrides.
+# sensitive app secrets → runtime plain env.
 
 variable "project_id" {
   type        = string
@@ -139,56 +139,54 @@ variable "keep_warm_interval_minutes" {
 }
 
 # ---------------------------------------------------------------------------
-# Secrets: names only; values are set outside Terraform (gcloud or console)
+# Sensitive app secrets (passed as Terraform variables; injected as plain env)
 # ---------------------------------------------------------------------------
 
-variable "secret_slack_signing_secret" {
+variable "slack_signing_secret" {
   type        = string
-  default     = "syncbot-slack-signing-secret"
-  description = "Secret Manager secret ID for SLACK_SIGNING_SECRET"
+  sensitive   = true
+  description = "SLACK_SIGNING_SECRET for request verification"
 }
 
-variable "secret_slack_client_id" {
+variable "slack_client_id" {
   type        = string
-  default     = "syncbot-slack-client-id"
-  description = "Secret Manager secret ID for SLACK_CLIENT_ID"
+  description = "SLACK_CLIENT_ID (OAuth app Client ID)"
 }
 
-variable "secret_slack_client_secret" {
+variable "slack_client_secret" {
   type        = string
-  default     = "syncbot-slack-client-secret"
-  description = "Secret Manager secret ID for SLACK_CLIENT_SECRET"
+  sensitive   = true
+  description = "SLACK_CLIENT_SECRET (OAuth client secret)"
 }
 
-variable "secret_slack_bot_scopes" {
+variable "slack_bot_scopes" {
   type        = string
-  default     = "syncbot-slack-scopes"
-  description = "Secret Manager secret ID whose value is comma-separated bot OAuth scopes (runtime env SLACK_BOT_SCOPES)"
+  default     = "app_mentions:read,channels:history,channels:join,channels:read,channels:manage,chat:write,chat:write.customize,files:read,files:write,groups:history,groups:read,groups:write,im:write,reactions:read,reactions:write,team:read,users:read,users:read.email"
+  description = "Comma-separated Slack OAuth bot scopes (SLACK_BOT_SCOPES)"
 }
 
 variable "slack_user_scopes" {
   type        = string
   default     = "chat:write,channels:history,channels:read,files:read,files:write,groups:history,groups:read,groups:write,im:write,reactions:read,reactions:write,team:read,users:read,users:read.email"
-  description = "Comma-separated user OAuth scopes for Cloud Run (SLACK_USER_SCOPES). Must match slack-manifest.json oauth_config.scopes.user and syncbot/slack_manifest_scopes.py USER_SCOPES; default matches repo standard (same string as AWS SAM SlackOauthUserScopes Default)."
+  description = "Comma-separated user OAuth scopes for Cloud Run (SLACK_USER_SCOPES). Must match slack-manifest.json oauth_config.scopes.user."
 }
 
-variable "secret_token_encryption_key" {
+variable "token_encryption_key" {
   type        = string
-  default     = "syncbot-token-encryption-key"
-  description = "Secret Manager secret ID for TOKEN_ENCRYPTION_KEY"
+  sensitive   = true
+  description = "TOKEN_ENCRYPTION_KEY for Fernet bot-token encryption. Generate with: python3 -c \"import secrets; print(secrets.token_urlsafe(36))\""
 }
 
-variable "token_encryption_key_override" {
+variable "database_password" {
+  type        = string
+  sensitive   = true
+  description = "DATABASE_PASSWORD for the app DB user"
+}
+
+variable "database_user" {
   type        = string
   default     = ""
-  sensitive   = true
-  description = "Optional disaster-recovery override for TOKEN_ENCRYPTION_KEY. Leave empty for normal deploys."
-}
-
-variable "secret_db_password" {
-  type        = string
-  default     = "syncbot-db-password"
-  description = "Secret Manager secret ID for DATABASE_PASSWORD (used when use_existing_database = true or with Cloud SQL)"
+  description = "DATABASE_USER override; when set, used instead of computed db_user from existing_db_* variables"
 }
 
 # ---------------------------------------------------------------------------

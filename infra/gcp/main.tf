@@ -1,5 +1,6 @@
 # SyncBot on GCP — minimal Terraform scaffold
-# Satisfies docs/INFRA_CONTRACT.md (Cloud Run, secrets, optional Cloud SQL, keep-warm)
+# Satisfies docs/INFRA_CONTRACT.md (Cloud Run, optional Cloud SQL, keep-warm)
+# Secrets are passed as sensitive Terraform variables — no GCP Secret Manager dependency.
 
 terraform {
   required_version = ">= 1.0"
@@ -22,23 +23,6 @@ provider "google" {
 
 locals {
   name_prefix = "syncbot-${var.stage}"
-  secret_ids = [
-    var.secret_slack_signing_secret,
-    var.secret_slack_client_id,
-    var.secret_slack_client_secret,
-    var.secret_slack_bot_scopes,
-    var.secret_token_encryption_key,
-    var.secret_db_password,
-  ]
-  # Map deploy-contract env var names to Secret Manager secret variable keys (used in app_secrets)
-  env_to_secret_key = {
-    "SLACK_SIGNING_SECRET" = var.secret_slack_signing_secret
-    "SLACK_CLIENT_ID"      = var.secret_slack_client_id
-    "SLACK_CLIENT_SECRET"  = var.secret_slack_client_secret
-    "SLACK_BOT_SCOPES"     = var.secret_slack_bot_scopes
-    "TOKEN_ENCRYPTION_KEY" = var.secret_token_encryption_key
-    "DATABASE_PASSWORD"    = var.secret_db_password
-  }
   # Runtime DB connection: existing host or Cloud SQL public IP after create
   db_host = var.use_existing_database ? var.existing_db_host : (
     length(google_sql_database_instance.main) > 0 ? google_sql_database_instance.main[0].public_ip_address : ""
@@ -61,7 +45,7 @@ locals {
   runtime_plain_env = merge(
     {
       DATABASE_HOST                = local.db_host
-      DATABASE_USER                = local.db_user
+      DATABASE_USER                = var.database_user != "" ? var.database_user : local.db_user
       DATABASE_SCHEMA              = local.db_schema
       DATABASE_BACKEND             = var.database_backend
       DATABASE_PORT                = var.database_port
@@ -79,6 +63,16 @@ locals {
     var.database_tls_enabled != "" ? { DATABASE_TLS_ENABLED = var.database_tls_enabled } : {},
     trimspace(var.database_ssl_ca_path) != "" ? { DATABASE_SSL_CA_PATH = var.database_ssl_ca_path } : {},
   )
+
+  # Sensitive env vars (passed as plain env — values from Terraform variables)
+  runtime_secret_env = {
+    SLACK_SIGNING_SECRET = var.slack_signing_secret
+    SLACK_CLIENT_ID      = var.slack_client_id
+    SLACK_CLIENT_SECRET  = var.slack_client_secret
+    SLACK_BOT_SCOPES     = var.slack_bot_scopes
+    TOKEN_ENCRYPTION_KEY = var.token_encryption_key
+    DATABASE_PASSWORD    = var.database_password
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -88,12 +82,6 @@ locals {
 resource "google_project_service" "run" {
   project            = var.project_id
   service            = "run.googleapis.com"
-  disable_on_destroy = false
-}
-
-resource "google_project_service" "secretmanager" {
-  project            = var.project_id
-  service            = "secretmanager.googleapis.com"
   disable_on_destroy = false
 }
 
@@ -118,22 +106,6 @@ resource "google_project_service" "artifact_registry" {
 }
 
 # ---------------------------------------------------------------------------
-# Secret Manager: placeholder secrets (values set via gcloud or console)
-# ---------------------------------------------------------------------------
-
-resource "google_secret_manager_secret" "app_secrets" {
-  for_each  = toset(local.secret_ids)
-  project   = var.project_id
-  secret_id = "${local.name_prefix}-${each.key}"
-
-  replication {
-    auto {}
-  }
-
-  depends_on = [google_project_service.secretmanager]
-}
-
-# ---------------------------------------------------------------------------
 # Artifact Registry repository for container images (deploy contract: artifact_bucket equivalent)
 # ---------------------------------------------------------------------------
 
@@ -154,14 +126,6 @@ resource "google_service_account" "cloud_run" {
   project      = var.project_id
   account_id   = "${replace(local.name_prefix, "-", "")}-run"
   display_name = "SyncBot Cloud Run runtime (${var.stage})"
-}
-
-# Grant Cloud Run SA access to read the app secrets
-resource "google_project_iam_member" "cloud_run_secret_access" {
-  for_each = toset(local.secret_ids)
-  project  = var.project_id
-  role     = "roles/secretmanager.secretAccessor"
-  member   = "serviceAccount:${google_service_account.cloud_run.email}"
 }
 
 # ---------------------------------------------------------------------------
@@ -199,11 +163,6 @@ resource "google_project_iam_member" "deploy_artifact_writer" {
 resource "random_password" "db" {
   count   = var.use_existing_database ? 0 : 1
   length  = 24
-  special = false
-}
-
-resource "random_password" "token_encryption_key" {
-  length  = 48
   special = false
 }
 
@@ -250,19 +209,6 @@ resource "google_sql_user" "app" {
   password = random_password.db[0].result
 }
 
-# Store Cloud SQL password in Secret Manager for Cloud Run
-resource "google_secret_manager_secret_version" "db_password" {
-  count       = var.use_existing_database ? 0 : 1
-  secret      = google_secret_manager_secret.app_secrets[var.secret_db_password].id
-  secret_data = random_password.db[0].result
-}
-
-# Generate TOKEN_ENCRYPTION_KEY once and persist in Secret Manager.
-resource "google_secret_manager_secret_version" "token_encryption_key" {
-  secret      = google_secret_manager_secret.app_secrets[var.secret_token_encryption_key].id
-  secret_data = var.token_encryption_key_override != "" ? var.token_encryption_key_override : random_password.token_encryption_key.result
-}
-
 # ---------------------------------------------------------------------------
 # Cloud Run service
 # ---------------------------------------------------------------------------
@@ -284,7 +230,6 @@ resource "google_cloud_run_v2_service" "syncbot" {
   template {
     service_account = google_service_account.cloud_run.email
 
-    # Lambda-like single request per container (free-tier friendly; matches app pool sizing).
     max_instance_request_concurrency = 1
 
     scaling {
@@ -311,15 +256,10 @@ resource "google_cloud_run_v2_service" "syncbot" {
       }
 
       dynamic "env" {
-        for_each = local.env_to_secret_key
+        for_each = local.runtime_secret_env
         content {
-          name = env.key
-          value_source {
-            secret_key_ref {
-              secret  = google_secret_manager_secret.app_secrets[env.value].name
-              version = "latest"
-            }
-          }
+          name  = env.key
+          value = env.value
         }
       }
     }
@@ -327,7 +267,6 @@ resource "google_cloud_run_v2_service" "syncbot" {
 
   depends_on = [
     google_project_service.run,
-    google_secret_manager_secret.app_secrets,
   ]
 }
 
