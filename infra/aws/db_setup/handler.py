@@ -3,16 +3,17 @@ Custom CloudFormation resource: create database and app user for SyncBot.
 
 Supports MySQL and PostgreSQL with configurable port, optional schema creation,
 and optional dedicated app user (external DBs may disallow CREATE USER).
+
+Passwords are passed directly via CloudFormation resource properties
+(AppPassword, AdminPassword) — no Secrets Manager dependency.
 """
 
-import base64
 import json
 import re
 import socket
 import ssl
 import time
 
-import boto3
 import psycopg2
 import pymysql
 from psycopg2 import sql as psql
@@ -109,46 +110,31 @@ def _parse_bool_prop(props: dict, key: str, default: bool = True) -> bool:
     return default
 
 
-def put_secret_string(secret_arn: str, secret_string: str) -> None:
-    client = boto3.client("secretsmanager")
-    client.put_secret_value(SecretId=secret_arn, SecretString=secret_string)
-
-
 def _handler_impl(event, context):
     request_type = event.get("RequestType", "Create")
     props = event.get("ResourceProperties", {})
     host = props.get("Host", "").strip()
     admin_user = (props.get("AdminUser") or "").strip()
     admin_password = props.get("AdminPassword") or ""
-    admin_secret_arn = (props.get("AdminSecretArn") or "").strip()
     schema = (props.get("Schema") or "syncbot").strip()
     stage = (props.get("Stage") or "test").strip()
-    secret_arn = (props.get("SecretArn") or "").strip()
+    app_password = (props.get("AppPassword") or "").strip()
     database_engine = (props.get("DatabaseEngine") or "mysql").strip().lower()
     port = _parse_port(props, database_engine)
     create_app_user = _parse_bool_prop(props, "CreateAppUser", default=True)
     create_schema = _parse_bool_prop(props, "CreateSchema", default=True)
 
     if request_type == "Delete":
-        # Must return the same PhysicalResourceId as Create; never use a placeholder.
         delete_pid = event.get("PhysicalResourceId") or event["LogicalResourceId"]
         send(event, context, "SUCCESS", {"Username": ""}, physical_resource_id=delete_pid)
         return
 
-    if not all([host, admin_user, schema, stage, secret_arn]):
+    if not all([host, admin_user, admin_password, schema, stage]):
         send(
             event,
             context,
             "FAILED",
-            reason="Missing Host, AdminUser, Schema, Stage, or SecretArn",
-        )
-        return
-    if not admin_password and not admin_secret_arn:
-        send(
-            event,
-            context,
-            "FAILED",
-            reason="Missing admin credentials: set AdminPassword or AdminSecretArn",
+            reason="Missing Host, AdminUser, AdminPassword, Schema, or Stage",
         )
         return
 
@@ -162,26 +148,11 @@ def _handler_impl(event, context):
         app_username = app_username_override
     else:
         app_username = f"{username_prefix}sbapp_{stage}".replace("-", "_")
-    app_password = ""
-    if create_app_user:
-        try:
-            app_password = get_secret_value(secret_arn)
-        except Exception as e:
-            send(event, context, "FAILED", reason=f"GetSecretValue failed: {e}")
-            return
-    if not admin_password:
-        try:
-            # RDS-managed master-user secrets store JSON; extract the password field.
-            admin_password = get_secret_value(admin_secret_arn, json_key="password")
-        except Exception as e:
-            send(event, context, "FAILED", reason=f"Get admin secret failed: {e}")
-            return
 
     result_username = app_username if create_app_user else admin_user
     physical_resource_id = result_username
 
     try:
-        # Fail fast on obvious network connectivity issues before opening DB client sessions.
         _assert_tcp_reachable(host, port)
         if create_schema or create_app_user:
             if database_engine == "mysql":
@@ -208,8 +179,6 @@ def _handler_impl(event, context):
                     create_schema=create_schema,
                     create_app_user=create_app_user,
                 )
-        if not create_app_user:
-            put_secret_string(secret_arn, admin_password)
     except Exception as e:
         send(event, context, "FAILED", reason=f"Database setup failed: {e}")
         return
@@ -240,30 +209,6 @@ def _assert_tcp_reachable(host: str, port: int) -> None:
             sock.close()
     raise RuntimeError(f"Cannot reach {host}:{port} over TCP after {DB_CONNECT_ATTEMPTS} attempts: {last_exc}")
 
-
-def get_secret_value(secret_arn: str, json_key: str | None = None) -> str:
-    client = boto3.client("secretsmanager")
-    resp = client.get_secret_value(SecretId=secret_arn)
-    secret_string = resp.get("SecretString")
-    if secret_string is None:
-        secret_binary = resp.get("SecretBinary")
-        if secret_binary is not None:
-            secret_string = base64.b64decode(secret_binary).decode("utf-8")
-    secret_string = (secret_string or "").strip()
-    if not secret_string:
-        raise ValueError(f"Secret {secret_arn} is empty")
-
-    if json_key:
-        try:
-            payload = json.loads(secret_string)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"Secret {secret_arn} is not JSON; cannot read key '{json_key}'") from exc
-        value = (payload.get(json_key) or "").strip() if isinstance(payload, dict) else ""
-        if not value:
-            raise ValueError(f"Secret {secret_arn} missing key '{json_key}'")
-        return value
-
-    return secret_string
 
 
 def setup_database_mysql(

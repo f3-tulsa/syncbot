@@ -166,11 +166,14 @@ Resources:
               - lambda:PublishVersion
               - lambda:InvokeFunction
             Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:syncbot-*"
-          - Sid: ApiGateway
+          - Sid: LambdaFunctionUrl
             Effect: Allow
             Action:
-              - apigateway:*
-            Resource: "*"
+              - lambda:CreateFunctionUrlConfig
+              - lambda:UpdateFunctionUrlConfig
+              - lambda:DeleteFunctionUrlConfig
+              - lambda:GetFunctionUrlConfig
+            Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:syncbot-*"
           - Sid: Logs
             Effect: Allow
             Action:
@@ -243,18 +246,18 @@ Resources:
               - events:DescribeRule
               - events:ListTargetsByRule
             Resource: "*"
-          - Sid: SecretsManagerSyncBot
+          - Sid: IAMManageSyncBotPolicies
             Effect: Allow
             Action:
-              - secretsmanager:GetSecretValue
-              - secretsmanager:DescribeSecret
-              - secretsmanager:CreateSecret
-              - secretsmanager:UpdateSecret
-              - secretsmanager:DeleteSecret
-              - secretsmanager:TagResource
-              - secretsmanager:UntagResource
-              - secretsmanager:ListSecretVersionIds
-            Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:syncbot-*"
+              - iam:CreatePolicy
+              - iam:GetPolicy
+              - iam:DeletePolicy
+              - iam:CreatePolicyVersion
+              - iam:DeletePolicyVersion
+              - iam:ListPolicyVersions
+              - iam:GetPolicyVersion
+            Resource:
+              - !Sub "arn:aws:iam::${AWS::AccountId}:policy/syncbot-*"
 
 Outputs:
   GitHubDeployRoleArn:
