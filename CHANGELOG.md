@@ -5,6 +5,28 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Deploy script: `--bootstrap`, `--setup-github` (both modes), `CLOUD_PROVIDER` auto-select, `_SM_ID` secret resolution, auto-gen `TOKEN_ENCRYPTION_KEY`/`DATABASE_PASSWORD`, interactive config save
+- `.env.deploy.example` for cloud deployments (separate from `.env.example`)
+- CI: bootstrap sync, `workflow_dispatch`, concurrency groups, `pip-audit`, `GITHUB_STEP_SUMMARY`
+- CloudWatch Logs 30-day retention; X-Ray tracing now optional
+
+### Changed
+
+- AWS: Lambda Function URLs replace API Gateway; Secrets Manager removed (secrets via SAM `NoEcho` params)
+- GCP: Secret Manager removed (secrets via sensitive Terraform variables)
+- `DbSetup` conditional — skipped when `DATABASE_USER` + `DATABASE_PASSWORD` provided directly
+- `.env.example` simplified for local dev (default SQLite)
+- Docs: `DEPLOYMENT.md` renamed to `DEPLOY.md`
+
+### Removed
+
+- AWS API Gateway and Secrets Manager resources
+- GCP Secret Manager resources
+
 ## [1.0.2] - 2026-03-28
 
 ### Added
