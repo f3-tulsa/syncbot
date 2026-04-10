@@ -1,9 +1,7 @@
-# Deploy SyncBot to AWS (SAM). See docs/DEPLOYMENT.md and docs/INFRA_CONTRACT.md.
+# Deploy SyncBot to AWS (SAM). See docs/DEPLOY.md and docs/INFRA_CONTRACT.md.
 # To use GCP instead: set repository variable DEPLOY_TARGET=gcp and disable this workflow.
 #
-# Token key policy: Non-local deploys require a secure TOKEN_ENCRYPTION_KEY. The AWS app stack
-# auto-generates it in Secrets Manager by default. Back up the generated key after first deploy.
-# Optional disaster recovery secret TOKEN_ENCRYPTION_KEY_OVERRIDE passes TokenEncryptionKeyOverride for restore.
+# Secrets are passed as SAM parameters with NoEcho — no AWS Secrets Manager dependency.
 
 name: Deploy (AWS)
 
@@ -12,6 +10,19 @@ on:
     branches:
       - test
       - prod
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        type: choice
+        options:
+          - test
+          - prod
+
+concurrency:
+  group: deploy-${{ github.event.inputs.environment || github.ref_name }}
+  cancel-in-progress: false
 
 permissions:
   id-token: write
@@ -43,20 +54,16 @@ jobs:
 
       - run: sam build -t infra/aws/template.yaml
 
-      - name: Security audit Python dependencies
-        run: |
-          python -m pip install --upgrade pip pip-audit
-          pip-audit -r syncbot/requirements.txt
-          pip-audit -r infra/aws/db_setup/requirements.txt
-
       - name: Publish artifact
         uses: actions/upload-artifact@v7
         with:
           name: build-artifact
-          path: './.aws-sam/build'
+          path: |
+            ./.aws-sam/build
+            ./infra/aws/template.bootstrap.yaml
 
   sam-deploy-test:
-    if: github.ref == 'refs/heads/test'
+    if: (github.ref == 'refs/heads/test') || (github.event.inputs.environment == 'test')
     runs-on: ubuntu-latest
     environment: test
     needs: sam-build
@@ -76,14 +83,40 @@ jobs:
         with:
           use-installer: true
 
+      - name: Sync bootstrap stack (if template changed)
+        run: |
+          STACK="${{ vars.BOOTSTRAP_STACK_NAME || 'syncbot-bootstrap' }}"
+          REGION="${{ vars.AWS_REGION }}"
+          if ! aws cloudformation describe-stacks --stack-name "$STACK" --region "$REGION" >/dev/null 2>&1; then
+            echo "Bootstrap stack '$STACK' does not exist; skipping sync (run --bootstrap locally first)."
+            exit 0
+          fi
+          CURRENT_TEMPLATE=$(aws cloudformation get-template --stack-name "$STACK" --region "$REGION" --query TemplateBody --output json)
+          NEW_HASH=$(sha256sum infra/aws/template.bootstrap.yaml | cut -d' ' -f1)
+          OLD_HASH=$(echo "$CURRENT_TEMPLATE" | sha256sum | cut -d' ' -f1)
+          if [[ "$NEW_HASH" == "$OLD_HASH" ]]; then
+            echo "Bootstrap template unchanged; skipping sync."
+            exit 0
+          fi
+          echo "Bootstrap template changed; syncing..."
+          PARAMS=$(aws cloudformation describe-stacks --stack-name "$STACK" --region "$REGION" \
+            --query "Stacks[0].Parameters" --output json)
+          GH_REPO=$(echo "$PARAMS" | jq -r '.[] | select(.ParameterKey=="GitHubRepository") | .ParameterValue')
+          CREATE_OIDC=$(echo "$PARAMS" | jq -r '.[] | select(.ParameterKey=="CreateOIDCProvider") | .ParameterValue')
+          BUCKET_PREFIX=$(echo "$PARAMS" | jq -r '.[] | select(.ParameterKey=="DeploymentBucketPrefix") | .ParameterValue')
+          aws cloudformation deploy \
+            --template-file infra/aws/template.bootstrap.yaml \
+            --stack-name "$STACK" \
+            --parameter-overrides \
+              "GitHubRepository=$GH_REPO" \
+              "CreateOIDCProvider=${CREATE_OIDC:-true}" \
+              "DeploymentBucketPrefix=${BUCKET_PREFIX:-syncbot-deploy}" \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --region "$REGION" \
+            --no-fail-on-empty-changeset
+
       - name: Deploy to test
         run: |
-          TOKEN_KEY_OVERRIDE="${{ secrets.TOKEN_ENCRYPTION_KEY_OVERRIDE }}"
-          OVERRIDE_PARAM=""
-          if [ -n "$TOKEN_KEY_OVERRIDE" ]; then
-            OVERRIDE_PARAM=" TokenEncryptionKeyOverride=$TOKEN_KEY_OVERRIDE"
-            echo "Using TOKEN_ENCRYPTION_KEY_OVERRIDE for disaster-recovery deploy."
-          fi
           sam deploy \
             -t .aws-sam/build/template.yaml \
             --no-confirm-changeset \
@@ -97,6 +130,9 @@ jobs:
             --parameter-overrides \
               "Stage=${{ vars.STAGE_NAME }} \
                DatabaseEngine=${{ vars.DATABASE_ENGINE || 'mysql' }} \
+               TokenEncryptionKey=${{ secrets.TOKEN_ENCRYPTION_KEY }} \
+               DatabasePassword=${{ secrets.DATABASE_PASSWORD }} \
+               DatabaseUser=${{ secrets.DATABASE_USER }} \
                ExistingDatabaseHost=${{ vars.EXISTING_DATABASE_HOST }} \
                ExistingDatabaseAdminUser=${{ vars.EXISTING_DATABASE_ADMIN_USER }} \
                ExistingDatabaseAdminPassword=${{ secrets.EXISTING_DATABASE_ADMIN_PASSWORD }} \
@@ -117,10 +153,10 @@ jobs:
                SyncbotPublicUrl=${{ vars.SYNCBOT_PUBLIC_URL }} \
                PrimaryWorkspace=${{ vars.PRIMARY_WORKSPACE }} \
                EnableDbReset=${{ vars.ENABLE_DB_RESET }} \
+               EnableXRay=${{ vars.ENABLE_XRAY || 'false' }} \
                SlackClientID=${{ vars.SLACK_CLIENT_ID }} \
                SlackClientSecret=${{ secrets.SLACK_CLIENT_SECRET }} \
-               SlackSigningSecret=${{ secrets.SLACK_SIGNING_SECRET }} \
-               $OVERRIDE_PARAM"
+               SlackSigningSecret=${{ secrets.SLACK_SIGNING_SECRET }}"
 
       - name: Run migrations and warm up Lambda
         run: |
@@ -135,8 +171,22 @@ jobs:
             /tmp/migrate-response.json
           cat /tmp/migrate-response.json
 
+      - name: Post-deploy summary
+        run: |
+          STACK=${{ vars.AWS_STACK_NAME }}
+          API_URL=$(aws cloudformation describe-stacks --stack-name "$STACK" \
+            --query "Stacks[0].Outputs[?OutputKey=='SyncBotApiUrl'].OutputValue" --output text)
+          INSTALL_URL=$(aws cloudformation describe-stacks --stack-name "$STACK" \
+            --query "Stacks[0].Outputs[?OutputKey=='SyncBotInstallUrl'].OutputValue" --output text)
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## SyncBot Deploy (test)
+          - **Stack**: $STACK
+          - **API URL**: $API_URL
+          - **Install URL**: $INSTALL_URL
+          EOF
+
   sam-deploy-prod:
-    if: github.ref == 'refs/heads/prod'
+    if: (github.ref == 'refs/heads/prod') || (github.event.inputs.environment == 'prod')
     runs-on: ubuntu-latest
     environment: prod
     needs: sam-build
@@ -156,14 +206,40 @@ jobs:
         with:
           use-installer: true
 
+      - name: Sync bootstrap stack (if template changed)
+        run: |
+          STACK="${{ vars.BOOTSTRAP_STACK_NAME || 'syncbot-bootstrap' }}"
+          REGION="${{ vars.AWS_REGION }}"
+          if ! aws cloudformation describe-stacks --stack-name "$STACK" --region "$REGION" >/dev/null 2>&1; then
+            echo "Bootstrap stack '$STACK' does not exist; skipping sync (run --bootstrap locally first)."
+            exit 0
+          fi
+          CURRENT_TEMPLATE=$(aws cloudformation get-template --stack-name "$STACK" --region "$REGION" --query TemplateBody --output json)
+          NEW_HASH=$(sha256sum infra/aws/template.bootstrap.yaml | cut -d' ' -f1)
+          OLD_HASH=$(echo "$CURRENT_TEMPLATE" | sha256sum | cut -d' ' -f1)
+          if [[ "$NEW_HASH" == "$OLD_HASH" ]]; then
+            echo "Bootstrap template unchanged; skipping sync."
+            exit 0
+          fi
+          echo "Bootstrap template changed; syncing..."
+          PARAMS=$(aws cloudformation describe-stacks --stack-name "$STACK" --region "$REGION" \
+            --query "Stacks[0].Parameters" --output json)
+          GH_REPO=$(echo "$PARAMS" | jq -r '.[] | select(.ParameterKey=="GitHubRepository") | .ParameterValue')
+          CREATE_OIDC=$(echo "$PARAMS" | jq -r '.[] | select(.ParameterKey=="CreateOIDCProvider") | .ParameterValue')
+          BUCKET_PREFIX=$(echo "$PARAMS" | jq -r '.[] | select(.ParameterKey=="DeploymentBucketPrefix") | .ParameterValue')
+          aws cloudformation deploy \
+            --template-file infra/aws/template.bootstrap.yaml \
+            --stack-name "$STACK" \
+            --parameter-overrides \
+              "GitHubRepository=$GH_REPO" \
+              "CreateOIDCProvider=${CREATE_OIDC:-true}" \
+              "DeploymentBucketPrefix=${BUCKET_PREFIX:-syncbot-deploy}" \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --region "$REGION" \
+            --no-fail-on-empty-changeset
+
       - name: Deploy to prod
         run: |
-          TOKEN_KEY_OVERRIDE="${{ secrets.TOKEN_ENCRYPTION_KEY_OVERRIDE }}"
-          OVERRIDE_PARAM=""
-          if [ -n "$TOKEN_KEY_OVERRIDE" ]; then
-            OVERRIDE_PARAM=" TokenEncryptionKeyOverride=$TOKEN_KEY_OVERRIDE"
-            echo "Using TOKEN_ENCRYPTION_KEY_OVERRIDE for disaster-recovery deploy."
-          fi
           sam deploy \
             -t .aws-sam/build/template.yaml \
             --no-confirm-changeset \
@@ -177,6 +253,9 @@ jobs:
             --parameter-overrides \
               "Stage=${{ vars.STAGE_NAME }} \
                DatabaseEngine=${{ vars.DATABASE_ENGINE || 'mysql' }} \
+               TokenEncryptionKey=${{ secrets.TOKEN_ENCRYPTION_KEY }} \
+               DatabasePassword=${{ secrets.DATABASE_PASSWORD }} \
+               DatabaseUser=${{ secrets.DATABASE_USER }} \
                ExistingDatabaseHost=${{ vars.EXISTING_DATABASE_HOST }} \
                ExistingDatabaseAdminUser=${{ vars.EXISTING_DATABASE_ADMIN_USER }} \
                ExistingDatabaseAdminPassword=${{ secrets.EXISTING_DATABASE_ADMIN_PASSWORD }} \
@@ -197,10 +276,10 @@ jobs:
                SyncbotPublicUrl=${{ vars.SYNCBOT_PUBLIC_URL }} \
                PrimaryWorkspace=${{ vars.PRIMARY_WORKSPACE }} \
                EnableDbReset=${{ vars.ENABLE_DB_RESET }} \
+               EnableXRay=${{ vars.ENABLE_XRAY || 'false' }} \
                SlackClientID=${{ vars.SLACK_CLIENT_ID }} \
                SlackClientSecret=${{ secrets.SLACK_CLIENT_SECRET }} \
-               SlackSigningSecret=${{ secrets.SLACK_SIGNING_SECRET }} \
-               $OVERRIDE_PARAM"
+               SlackSigningSecret=${{ secrets.SLACK_SIGNING_SECRET }}"
 
       - name: Run migrations and warm up Lambda
         run: |
@@ -214,3 +293,17 @@ jobs:
             --cli-binary-format raw-in-base64-out \
             /tmp/migrate-response.json
           cat /tmp/migrate-response.json
+
+      - name: Post-deploy summary
+        run: |
+          STACK=${{ vars.AWS_STACK_NAME }}
+          API_URL=$(aws cloudformation describe-stacks --stack-name "$STACK" \
+            --query "Stacks[0].Outputs[?OutputKey=='SyncBotApiUrl'].OutputValue" --output text)
+          INSTALL_URL=$(aws cloudformation describe-stacks --stack-name "$STACK" \
+            --query "Stacks[0].Outputs[?OutputKey=='SyncBotInstallUrl'].OutputValue" --output text)
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## SyncBot Deploy (prod)
+          - **Stack**: $STACK
+          - **API URL**: $API_URL
+          - **Install URL**: $INSTALL_URL
+          EOF

@@ -1,10 +1,10 @@
-# Deploy SyncBot to GCP (Cloud Run). See docs/DEPLOYMENT.md and docs/INFRA_CONTRACT.md.
+# Deploy SyncBot to GCP (Cloud Run). See docs/DEPLOY.md and docs/INFRA_CONTRACT.md.
 # To use AWS instead, disable this workflow and use deploy-aws.yml.
 #
 # Setup:
 # 1. Run infra/gcp Terraform and configure Workload Identity Federation for GitHub.
 # 2. Set GitHub vars: GCP_PROJECT_ID, GCP_REGION, GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_SERVICE_ACCOUNT.
-# 3. Set GitHub secrets for Slack/DB/encryption as needed for your CI (or use Secret Manager only).
+# 3. Set GitHub secrets for Slack/DB/encryption as needed for your CI.
 # 4. This workflow intentionally fails until real build/deploy steps are configured.
 
 name: Deploy (GCP)
