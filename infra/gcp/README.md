@@ -1,6 +1,6 @@
 # SyncBot on GCP (Terraform)
 
-Minimal Terraform scaffold to run SyncBot on Google Cloud. Satisfies the [infrastructure contract](../../docs/INFRA_CONTRACT.md): Cloud Run (public HTTPS), Secret Manager, optional Cloud SQL, and optional Cloud Scheduler keep-warm.
+Minimal Terraform scaffold to run SyncBot on Google Cloud. Satisfies the [infrastructure contract](../../docs/INFRA_CONTRACT.md): Cloud Run (public HTTPS), optional Cloud SQL, and optional Cloud Scheduler keep-warm. Secrets are passed as sensitive Terraform variables — no GCP Secret Manager dependency.
 
 ## Prerequisites
 
@@ -10,34 +10,27 @@ Minimal Terraform scaffold to run SyncBot on Google Cloud. Satisfies the [infras
 
 ## Quick start
 
-1. **Enable APIs and create secrets (one-time)**  
-   Terraform will enable required APIs. Create Secret Manager secrets and set their values (or let Terraform create placeholder secrets and add versions manually):
+1. **Create a `.env.deploy.test` file** (see `.env.deploy.example` at repo root):
 
    ```bash
-   cd infra/gcp
-   terraform init
-   terraform plan -var="project_id=YOUR_PROJECT_ID" -var="stage=test"
-   terraform apply -var="project_id=YOUR_PROJECT_ID" -var="stage=test"
+   cp .env.deploy.example .env.deploy.test
+   # Edit with your Slack credentials, TOKEN_ENCRYPTION_KEY, DATABASE_PASSWORD, etc.
    ```
 
-2. **Set secret values**  
-   After the first apply, add secret versions for Slack and DB (if using existing DB). Use the secret IDs shown in Terraform (e.g. `syncbot-test-syncbot-slack-signing-secret`):
+2. **Deploy non-interactively:**
 
    ```bash
-   echo -n "YOUR_SLACK_SIGNING_SECRET" | gcloud secrets versions add syncbot-test-syncbot-slack-signing-secret --data-file=-
-   # Repeat for SLACK_CLIENT_ID, SLACK_CLIENT_SECRET, SLACK_BOT_SCOPES (comma-separated list must match oauth_config.scopes.bot / BOT_SCOPES), syncbot-db-password (if existing DB)
+   ./deploy.sh --env test gcp
    ```
 
-   `TOKEN_ENCRYPTION_KEY` is generated once automatically by Terraform and stored in Secret Manager. Back it up. If lost, existing workspaces must reinstall to re-authorize bot tokens.
-   For disaster recovery, restore with `-var='token_encryption_key_override=<old_key>'`.
+   Or deploy interactively (prompts for all values):
+
+   ```bash
+   ./deploy.sh gcp
+   ```
 
 3. **Set the Cloud Run image**  
-   By default the service uses a placeholder image. Build and push your SyncBot image to Artifact Registry, then:
-
-   ```bash
-   terraform apply -var="project_id=YOUR_PROJECT_ID" -var="stage=test" \
-     -var='cloud_run_image=REGION-docker.pkg.dev/PROJECT/syncbot-test-images/syncbot:latest'
-   ```
+   By default the service uses a placeholder image. Build and push your SyncBot image to Artifact Registry, then update `CLOUD_RUN_IMAGE` in your `.env.deploy` file and re-deploy.
 
 ## Variables (summary)
 
@@ -46,13 +39,19 @@ Minimal Terraform scaffold to run SyncBot on Google Cloud. Satisfies the [infras
 | `project_id` | GCP project ID (required) |
 | `region` | Region for Cloud Run and optional Cloud SQL (default `us-central1`) |
 | `stage` | Stage name, e.g. `test` or `prod` |
+| `slack_signing_secret` | Slack app signing secret (sensitive) |
+| `slack_client_id` | Slack app client ID |
+| `slack_client_secret` | Slack app client secret (sensitive) |
+| `token_encryption_key` | Encryption key for stored OAuth tokens (sensitive) |
+| `database_password` | App database password (sensitive) |
+| `database_user` | App database username (optional; defaults to `sbapp_{stage}`) |
 | `use_existing_database` | If `true`, use `existing_db_*` vars instead of creating Cloud SQL |
 | `existing_db_host`, `existing_db_schema`, `existing_db_user` | Existing MySQL connection (when `use_existing_database = true`) |
 | `existing_db_username_prefix` | Optional (e.g. TiDB Cloud `abc123`). A dot separator is added automatically. When set, `DATABASE_USER` is `{prefix}.sbapp_{stage}` unless `existing_db_app_username` is set; `existing_db_user` is ignored |
 | `existing_db_app_username` | Optional full `DATABASE_USER` (bypasses prefix + `sbapp_{stage}` and `existing_db_user`) |
 | `cloud_run_image` | Container image URL for Cloud Run (set after first build) |
-| `secret_slack_bot_scopes` | Secret Manager secret ID for **bot** OAuth scopes (runtime `SLACK_BOT_SCOPES`; default `syncbot-slack-scopes`). The **secret value** must match `oauth_config.scopes.bot` / `BOT_SCOPES` (same requirement as AWS SAM `SlackOauthBotScopes`). |
-| `slack_user_scopes` | Plain-text **user** OAuth scopes for Cloud Run (`SLACK_USER_SCOPES`). Default matches repo standard (same comma-separated string as AWS SAM `SlackOauthUserScopes`); must match manifest `oauth_config.scopes.user` and `USER_SCOPES` in `slack_manifest_scopes.py`. |
+| `slack_bot_scopes` | Bot OAuth scopes (runtime `SLACK_BOT_SCOPES`). Must match `oauth_config.scopes.bot` in the Slack manifest. |
+| `slack_user_scopes` | User OAuth scopes for Cloud Run (`SLACK_USER_SCOPES`). Default matches repo standard; must match manifest `oauth_config.scopes.user`. |
 | `log_level` | Python logging level for the app (`LOG_LEVEL`): `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` (default `INFO`). |
 | `enable_keep_warm` | Create Cloud Scheduler job to ping the service (default `true`) |
 

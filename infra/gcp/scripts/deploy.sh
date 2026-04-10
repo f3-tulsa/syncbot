@@ -3,12 +3,15 @@
 #   ./infra/gcp/scripts/deploy.sh
 # Or via: ./deploy.sh gcp
 #
-# Phases (main path):
+# Non-interactive path (ENV_FILE_LOADED=true):
+#   Sources .env.deploy.{stage}, builds TF vars from env, runs terraform init/plan/apply.
+#
+# Interactive path:
 #   1) Prerequisites (terraform, gcloud, python3, curl)
 #   2) Project, region, stage; detect existing Cloud Run service
-#   3) Deploy Tasks: multi-select menu (build/deploy, CI/CD, Slack API, backup secrets)
+#   3) Deploy Tasks: multi-select menu (build/deploy, CI/CD, Slack API)
 #   4) Configuration (if build/deploy): database, image, log level, terraform init/plan/apply
-#   5) Post-tasks: Slack manifest/API, deploy receipt, print-bootstrap-outputs, GitHub Actions, DR secrets
+#   5) Post-tasks: Slack manifest/API, deploy receipt, print-bootstrap-outputs, GitHub Actions
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -194,77 +197,6 @@ cloud_run_image_value() {
     --project "$project_id" \
     --region "$region" \
     --format='value(spec.template.spec.containers[0].image)' 2>/dev/null || true
-}
-
-secret_has_active_version() {
-  local project_id="$1"
-  local secret_name="$2"
-  local latest_state
-  latest_state="$(gcloud secrets versions describe latest \
-    --project "$project_id" \
-    --secret "$secret_name" \
-    --format='value(state)' 2>/dev/null || true)"
-  [[ "$latest_state" == "ENABLED" ]]
-}
-
-secret_latest_value() {
-  local project_id="$1"
-  local secret_name="$2"
-  gcloud secrets versions access latest \
-    --project "$project_id" \
-    --secret "$secret_name" 2>/dev/null || true
-}
-
-cloud_run_secret_name() {
-  local project_id="$1"
-  local region="$2"
-  local service_name="$3"
-  local env_key="$4"
-  gcloud run services describe "$service_name" \
-    --project "$project_id" \
-    --region "$region" \
-    --format=json 2>/dev/null | python3 - "$env_key" <<'PY'
-import json
-import sys
-
-env_key = sys.argv[1]
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    print("")
-    raise SystemExit(0)
-
-containers = (data.get("spec", {}) or {}).get("template", {}).get("spec", {}).get("containers", [])
-for c in containers:
-    for e in c.get("env", []) or []:
-        if e.get("name") != env_key:
-            continue
-        secret_ref = (((e.get("valueSource") or {}).get("secretKeyRef") or {}).get("secret")) or ""
-        if not secret_ref:
-            print("")
-            raise SystemExit(0)
-        # Accept either full resource names or plain secret IDs.
-        print(secret_ref.split("/secrets/")[-1])
-        raise SystemExit(0)
-print("")
-PY
-}
-
-preflight_existing_db_secret_readiness() {
-  local project_id="$1"
-  local stage="$2"
-  local db_secret_name="syncbot-${stage}-syncbot-db-password"
-
-  echo
-  echo "=== Existing DB Secret Preflight ==="
-  echo "Verifying required Secret Manager value exists for DATABASE_PASSWORD..."
-  if ! secret_has_active_version "$project_id" "$db_secret_name"; then
-    echo "Missing active secret version for '$db_secret_name'." >&2
-    echo "Create one before deploy, for example:" >&2
-    echo "  printf '%s' '<db_password>' | gcloud secrets versions add '$db_secret_name' --project '$project_id' --data-file=-" >&2
-    exit 1
-  fi
-  echo "Secret preflight passed for: $db_secret_name"
 }
 
 slack_manifest_json_compact() {
@@ -514,10 +446,170 @@ configure_github_actions_gcp() {
 
   if prompt_yn "Set environment variable STAGE_NAME for '$env_name' now?" "y"; then
     gh variable set STAGE_NAME --env "$env_name" --body "$deploy_stage" -R "$repo"
+    gh variable set SLACK_CLIENT_ID --env "$env_name" --body "${SLACK_CLIENT_ID:-}" -R "$repo"
     echo "Environment variable STAGE_NAME updated for '$env_name'."
+  fi
+
+  if prompt_yn "Set environment secrets for '$env_name' now (Slack secrets, TOKEN_ENCRYPTION_KEY, DATABASE_PASSWORD)?" "n"; then
+    if [[ -z "${SLACK_SIGNING_SECRET:-}" ]]; then
+      SLACK_SIGNING_SECRET="$(required_from_env_or_prompt "SLACK_SIGNING_SECRET" "SlackSigningSecret" "secret")"
+    fi
+    if [[ -z "${SLACK_CLIENT_SECRET:-}" ]]; then
+      SLACK_CLIENT_SECRET="$(required_from_env_or_prompt "SLACK_CLIENT_SECRET" "SlackClientSecret" "secret")"
+    fi
+    gh secret set SLACK_SIGNING_SECRET --env "$env_name" --body "$SLACK_SIGNING_SECRET" -R "$repo"
+    gh secret set SLACK_CLIENT_SECRET --env "$env_name" --body "$SLACK_CLIENT_SECRET" -R "$repo"
+    gh secret set TOKEN_ENCRYPTION_KEY --env "$env_name" --body "$TOKEN_ENCRYPTION_KEY" -R "$repo"
+    gh secret set DATABASE_PASSWORD --env "$env_name" --body "$DATABASE_PASSWORD" -R "$repo"
+    [[ -n "${DATABASE_USER:-}" ]] && gh secret set DATABASE_USER --env "$env_name" --body "$DATABASE_USER" -R "$repo"
+    echo "GitHub environment secrets updated for '$env_name'."
+    echo "See docs/DEPLOY.md for full list of required variables and secrets."
   fi
 }
 
+# ====================================================================
+# Non-interactive fast path (./deploy.sh --env test|prod gcp)
+# ====================================================================
+if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
+  echo "=== SyncBot GCP Deploy (non-interactive) ==="
+  if [[ "${BOOTSTRAP:-}" == "true" ]]; then
+    echo "Note: --bootstrap is AWS-only (GCP uses a single terraform apply). Ignoring."
+  fi
+  PROJECT_ID="${GCP_PROJECT_ID:?GCP_PROJECT_ID required in env file}"
+  REGION="${GCP_REGION:-us-central1}"
+  STAGE="${STAGE:?STAGE required}"
+  CLOUD_IMAGE="${CLOUD_RUN_IMAGE:?CLOUD_RUN_IMAGE required in env file}"
+
+  ensure_gcloud_authenticated
+  ensure_gcloud_adc_authenticated
+  gcloud config set project "$PROJECT_ID" >/dev/null 2>&1 || true
+
+  EXISTING_DATABASE_HOST="${EXISTING_DATABASE_HOST:-${DATABASE_HOST:-}}"
+  USE_EXISTING="false"
+  [[ -n "$EXISTING_DATABASE_HOST" ]] && USE_EXISTING="true"
+
+  # Auto-generate TOKEN_ENCRYPTION_KEY if empty
+  if [[ -z "${TOKEN_ENCRYPTION_KEY:-}" ]]; then
+    TOKEN_ENCRYPTION_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(36))')"
+    echo "Generated TOKEN_ENCRYPTION_KEY=$TOKEN_ENCRYPTION_KEY"
+    echo "IMPORTANT: Store this key securely. You need it for disaster recovery."
+    if [[ -n "${ENV_FILE_PATH:-}" ]]; then
+      update_env_file "$ENV_FILE_PATH" "TOKEN_ENCRYPTION_KEY" "$TOKEN_ENCRYPTION_KEY"
+      echo "  (saved to $ENV_FILE_PATH)"
+    fi
+  fi
+
+  # Auto-generate DATABASE_PASSWORD + derive DATABASE_USER when using existing DB with admin setup
+  if [[ -n "${EXISTING_DATABASE_ADMIN_USER:-}" && -z "${DATABASE_PASSWORD:-}" ]]; then
+    DATABASE_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
+    echo "Generated DATABASE_PASSWORD=$DATABASE_PASSWORD"
+    if [[ -n "${ENV_FILE_PATH:-}" ]]; then
+      update_env_file "$ENV_FILE_PATH" "DATABASE_PASSWORD" "$DATABASE_PASSWORD"
+      echo "  (saved to $ENV_FILE_PATH)"
+    fi
+  fi
+  if [[ -n "${EXISTING_DATABASE_ADMIN_USER:-}" && -z "${DATABASE_USER:-}" ]]; then
+    DATABASE_USER="${EXISTING_DATABASE_USERNAME_PREFIX:+${EXISTING_DATABASE_USERNAME_PREFIX}.}sbapp_${STAGE}"
+    DATABASE_USER="${DATABASE_USER//-/_}"
+    echo "Derived DATABASE_USER=$DATABASE_USER"
+    if [[ -n "${ENV_FILE_PATH:-}" ]]; then
+      update_env_file "$ENV_FILE_PATH" "DATABASE_USER" "$DATABASE_USER"
+      echo "  (saved to $ENV_FILE_PATH)"
+    fi
+  fi
+
+  echo "=== Terraform Init ==="
+  cd "$GCP_DIR"
+  terraform init
+
+  VARS=(
+    "-var=project_id=$PROJECT_ID"
+    "-var=region=$REGION"
+    "-var=stage=$STAGE"
+    "-var=cloud_run_image=$CLOUD_IMAGE"
+    "-var=log_level=${LOG_LEVEL:-INFO}"
+    "-var=require_admin=${REQUIRE_ADMIN:-true}"
+    "-var=soft_delete_retention_days=${SOFT_DELETE_RETENTION_DAYS:-30}"
+    "-var=syncbot_federation_enabled=${SYNCBOT_FEDERATION_ENABLED:-false}"
+    "-var=slack_signing_secret=${SLACK_SIGNING_SECRET:?SLACK_SIGNING_SECRET required}"
+    "-var=slack_client_id=${SLACK_CLIENT_ID:?SLACK_CLIENT_ID required}"
+    "-var=slack_client_secret=${SLACK_CLIENT_SECRET:?SLACK_CLIENT_SECRET required}"
+    "-var=token_encryption_key=${TOKEN_ENCRYPTION_KEY:?TOKEN_ENCRYPTION_KEY required}"
+    "-var=database_password=${DATABASE_PASSWORD:?DATABASE_PASSWORD required}"
+    "-var=database_backend=${DATABASE_ENGINE:-mysql}"
+    "-var=database_port=${DATABASE_PORT:-3306}"
+  )
+  [[ -n "${DATABASE_USER:-}" ]] && VARS+=("-var=database_user=$DATABASE_USER")
+  [[ -n "${SYNCBOT_INSTANCE_ID:-}" ]] && VARS+=("-var=syncbot_instance_id=$SYNCBOT_INSTANCE_ID")
+  [[ -n "${SYNCBOT_PUBLIC_URL:-}" ]] && VARS+=("-var=syncbot_public_url_override=$SYNCBOT_PUBLIC_URL")
+  [[ -n "${PRIMARY_WORKSPACE:-}" ]] && VARS+=("-var=primary_workspace=$PRIMARY_WORKSPACE")
+  [[ -n "${ENABLE_DB_RESET:-}" ]] && VARS+=("-var=enable_db_reset=$ENABLE_DB_RESET")
+  [[ -n "${DATABASE_TLS_ENABLED:-}" ]] && VARS+=("-var=database_tls_enabled=$DATABASE_TLS_ENABLED")
+  [[ -n "${DATABASE_SSL_CA_PATH:-}" ]] && VARS+=("-var=database_ssl_ca_path=$DATABASE_SSL_CA_PATH")
+
+  if [[ "$USE_EXISTING" == "true" ]]; then
+    VARS+=("-var=use_existing_database=true")
+    VARS+=("-var=existing_db_host=$EXISTING_DATABASE_HOST")
+    VARS+=("-var=existing_db_schema=${DATABASE_SCHEMA:-syncbot}")
+    [[ -n "${EXISTING_DATABASE_USERNAME_PREFIX:-}" ]] && VARS+=("-var=existing_db_username_prefix=$EXISTING_DATABASE_USERNAME_PREFIX")
+    [[ -n "${EXISTING_DATABASE_APP_USERNAME:-}" ]] && VARS+=("-var=existing_db_app_username=$EXISTING_DATABASE_APP_USERNAME")
+    [[ -n "${EXISTING_DATABASE_CREATE_APP_USER:-}" ]] && VARS+=("-var=existing_db_create_app_user=$EXISTING_DATABASE_CREATE_APP_USER")
+    [[ -n "${EXISTING_DATABASE_CREATE_SCHEMA:-}" ]] && VARS+=("-var=existing_db_create_schema=$EXISTING_DATABASE_CREATE_SCHEMA")
+  fi
+
+  echo "=== Terraform Plan ==="
+  terraform plan "${VARS[@]}"
+
+  echo "=== Terraform Apply ==="
+  terraform apply -auto-approve "${VARS[@]}"
+
+  SERVICE_URL="$(terraform output -raw service_url 2>/dev/null || true)"
+  SYNCBOT_API_URL=""
+  SYNCBOT_INSTALL_URL=""
+  if [[ -n "$SERVICE_URL" ]]; then
+    SYNCBOT_API_URL="${SERVICE_URL%/}/slack/events"
+    SYNCBOT_INSTALL_URL="${SERVICE_URL%/}/slack/install"
+  fi
+  generate_stage_slack_manifest "$STAGE" "$SYNCBOT_API_URL" "$SYNCBOT_INSTALL_URL"
+
+  if [[ "${SETUP_GITHUB:-}" == "true" ]]; then
+    echo
+    echo "=== GitHub Setup (non-interactive) ==="
+    REPO="$(cd "$REPO_ROOT" && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)"
+    if [[ -z "$REPO" ]]; then
+      echo "Warning: could not detect GitHub repo; skipping --setup-github." >&2
+    else
+      ENV_NAME="$STAGE"
+      DEPLOY_SA="$(terraform output -raw deploy_service_account_email 2>/dev/null || true)"
+      gh api -X PUT "repos/$REPO/environments/$ENV_NAME" >/dev/null 2>&1 || true
+      gh variable set GCP_PROJECT_ID --body "$PROJECT_ID" -R "$REPO" 2>/dev/null || true
+      gh variable set GCP_REGION --body "$REGION" -R "$REPO" 2>/dev/null || true
+      gh variable set DEPLOY_TARGET --body "gcp" -R "$REPO" 2>/dev/null || true
+      [[ -n "$DEPLOY_SA" ]] && gh variable set GCP_SERVICE_ACCOUNT --body "$DEPLOY_SA" -R "$REPO" 2>/dev/null || true
+      gh variable set STAGE_NAME --env "$ENV_NAME" --body "$STAGE" -R "$REPO" 2>/dev/null || true
+      gh variable set SLACK_CLIENT_ID --env "$ENV_NAME" --body "$SLACK_CLIENT_ID" -R "$REPO" 2>/dev/null || true
+      gh secret set SLACK_SIGNING_SECRET --env "$ENV_NAME" --body "$SLACK_SIGNING_SECRET" -R "$REPO"
+      gh secret set SLACK_CLIENT_SECRET --env "$ENV_NAME" --body "$SLACK_CLIENT_SECRET" -R "$REPO"
+      gh secret set TOKEN_ENCRYPTION_KEY --env "$ENV_NAME" --body "$TOKEN_ENCRYPTION_KEY" -R "$REPO"
+      gh secret set DATABASE_PASSWORD --env "$ENV_NAME" --body "$DATABASE_PASSWORD" -R "$REPO"
+      [[ -n "${DATABASE_USER:-}" ]] && gh secret set DATABASE_USER --env "$ENV_NAME" --body "$DATABASE_USER" -R "$REPO"
+      echo "GitHub environment '$ENV_NAME' configured for repo $REPO."
+    fi
+  fi
+
+  echo
+  echo "=== Deploy Complete ==="
+  echo "Project:     $PROJECT_ID"
+  echo "Region:      $REGION"
+  echo "Service URL: ${SERVICE_URL:-n/a}"
+  echo "API URL:     ${SYNCBOT_API_URL:-n/a}"
+  echo "Install URL: ${SYNCBOT_INSTALL_URL:-n/a}"
+  exit 0
+fi
+
+# ====================================================================
+# Interactive deploy path
+# ====================================================================
 echo "=== SyncBot GCP Deploy ==="
 echo "Working directory: $GCP_DIR"
 echo
@@ -557,7 +649,7 @@ echo
 prompt_deploy_tasks_gcp
 
 if [[ "$TASK_BUILD_DEPLOY" != "true" ]]; then
-  if [[ "$TASK_CICD" == "true" || "$TASK_SLACK_API" == "true" || "$TASK_BACKUP_SECRETS" == "true" ]]; then
+  if [[ "$TASK_CICD" == "true" || "$TASK_SLACK_API" == "true" ]]; then
     cd "$GCP_DIR"
     if ! terraform output -raw service_url &>/dev/null; then
       echo "Error: No Terraform outputs found in $GCP_DIR. Select task 1 (Build/Deploy) first." >&2
@@ -732,6 +824,27 @@ if [[ "$SYNCBOT_FEDERATION_DEFAULT" == "true" ]]; then
 fi
 
 echo
+echo "=== App Secrets ==="
+echo "Secrets are passed directly as sensitive Terraform variables (no GCP Secret Manager)."
+
+if [[ -z "${TOKEN_ENCRYPTION_KEY:-}" ]]; then
+  TOKEN_ENCRYPTION_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(36))')"
+  echo "Generated TOKEN_ENCRYPTION_KEY=$TOKEN_ENCRYPTION_KEY"
+  echo "IMPORTANT: Store this key securely. You need it for disaster recovery."
+fi
+
+SLACK_SIGNING_SECRET="$(required_from_env_or_prompt "SLACK_SIGNING_SECRET" "SlackSigningSecret" "secret")"
+SLACK_CLIENT_ID="$(required_from_env_or_prompt "SLACK_CLIENT_ID" "SlackClientID")"
+SLACK_CLIENT_SECRET="$(required_from_env_or_prompt "SLACK_CLIENT_SECRET" "SlackClientSecret" "secret")"
+TOKEN_ENCRYPTION_KEY="$(required_from_env_or_prompt "TOKEN_ENCRYPTION_KEY" "TokenEncryptionKey" "secret")"
+DATABASE_PASSWORD="$(required_from_env_or_prompt "DATABASE_PASSWORD" "DatabasePassword" "secret")"
+
+DATABASE_USER=""
+if [[ "$USE_EXISTING" == "true" ]]; then
+  DATABASE_USER="$(required_from_env_or_prompt "DATABASE_USER" "DatabaseUser (pre-existing app DB user)")"
+fi
+
+echo
 echo "=== Terraform Init ==="
 echo "Running: terraform init"
 cd "$GCP_DIR"
@@ -755,10 +868,15 @@ VARS=(
   "-var=database_ssl_ca_path=${DB_SSL_CA_VAR:-}"
   "-var=database_backend=${DB_BACKEND:-mysql}"
   "-var=database_port=${DB_PORT:-3306}"
+  "-var=slack_signing_secret=$SLACK_SIGNING_SECRET"
+  "-var=slack_client_id=$SLACK_CLIENT_ID"
+  "-var=slack_client_secret=$SLACK_CLIENT_SECRET"
+  "-var=token_encryption_key=$TOKEN_ENCRYPTION_KEY"
+  "-var=database_password=$DATABASE_PASSWORD"
 )
+[[ -n "$DATABASE_USER" ]] && VARS+=("-var=database_user=$DATABASE_USER")
 
 if [[ "$USE_EXISTING" == "true" ]]; then
-  preflight_existing_db_secret_readiness "$PROJECT_ID" "$STAGE"
   VARS+=("-var=use_existing_database=true")
   VARS+=("-var=existing_db_host=$EXISTING_HOST")
   VARS+=("-var=existing_db_schema=$EXISTING_SCHEMA")
@@ -847,9 +965,8 @@ if [[ "$TASK_BUILD_DEPLOY" == "true" ]]; then
     "$SLACK_MANIFEST_GENERATED_PATH"
 
   echo "Next:"
-  echo "  1) Set Secret Manager values for Slack (see infra/gcp/README.md)."
-  echo "  2) Build and push container image; update cloud_run_image and re-apply when image changes."
-  echo "  3) Run: ./infra/gcp/scripts/print-bootstrap-outputs.sh"
+  echo "  1) Build and push container image; update cloud_run_image and re-apply when image changes."
+  echo "  2) Run: ./infra/gcp/scripts/print-bootstrap-outputs.sh"
   bash "$SCRIPT_DIR/print-bootstrap-outputs.sh" || true
 fi
 
@@ -857,47 +974,64 @@ if [[ "$TASK_CICD" == "true" ]]; then
   configure_github_actions_gcp "$PROJECT_ID" "$REGION" "$GCP_DIR" "$STAGE"
 fi
 
-TOKEN_SECRET_NAME=""
-DB_SECRET_NAME=""
-TOKEN_SECRET_VALUE=""
-DB_SECRET_VALUE=""
-if [[ "$TASK_BUILD_DEPLOY" == "true" || "$TASK_BACKUP_SECRETS" == "true" ]]; then
-  cd "$GCP_DIR"
-  TOKEN_SECRET_NAME="$(terraform output -raw token_encryption_secret_name 2>/dev/null || true)"
-  TOKEN_SECRET_NAME="${TOKEN_SECRET_NAME##*/secrets/}"
-  DB_SECRET_NAME="$(cloud_run_secret_name "$PROJECT_ID" "$REGION" "$SERVICE_NAME" "DATABASE_PASSWORD")"
-  if [[ -n "$TOKEN_SECRET_NAME" ]]; then
-    TOKEN_SECRET_VALUE="$(secret_latest_value "$PROJECT_ID" "$TOKEN_SECRET_NAME")"
-  fi
-  if [[ -n "$DB_SECRET_NAME" ]]; then
-    DB_SECRET_VALUE="$(secret_latest_value "$PROJECT_ID" "$DB_SECRET_NAME")"
-  fi
+# --- Save config to env file ---
+echo
+if prompt_yn "Save config to .env.deploy.${STAGE} for future deploys?" "y"; then
+  ENV_SAVE_FILE="$REPO_ROOT/.env.deploy.${STAGE}"
+  {
+    echo "# Generated by deploy.sh on $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "CLOUD_PROVIDER=gcp"
+    echo "GCP_PROJECT_ID=$PROJECT_ID"
+    echo "GCP_REGION=$REGION"
+    echo "CLOUD_RUN_IMAGE=$CLOUD_IMAGE"
+    echo ""
+    echo "SLACK_SIGNING_SECRET=$SLACK_SIGNING_SECRET"
+    echo "SLACK_CLIENT_SECRET=$SLACK_CLIENT_SECRET"
+    echo "SLACK_CLIENT_ID=$SLACK_CLIENT_ID"
+    echo ""
+    echo "TOKEN_ENCRYPTION_KEY=$TOKEN_ENCRYPTION_KEY"
+    echo ""
+    echo "DATABASE_HOST=${EXISTING_DATABASE_HOST:-}"
+    [[ -n "${DATABASE_PORT:-}" ]] && echo "DATABASE_PORT=$DATABASE_PORT"
+    echo "DATABASE_USER=${DATABASE_USER:-}"
+    echo "DATABASE_PASSWORD=$DATABASE_PASSWORD"
+    echo "DATABASE_SCHEMA=${DATABASE_SCHEMA:-syncbot}"
+    echo "DATABASE_ENGINE=${DATABASE_ENGINE:-mysql}"
+    [[ -n "${DATABASE_TLS_ENABLED:-}" ]] && echo "DATABASE_TLS_ENABLED=$DATABASE_TLS_ENABLED"
+  } > "$ENV_SAVE_FILE"
+  chmod 600 "$ENV_SAVE_FILE"
+  echo "Saved to $ENV_SAVE_FILE"
+  echo "Next time: ./deploy.sh --env $STAGE gcp"
 fi
 
-if [[ "$TASK_BACKUP_SECRETS" == "true" ]]; then
+# --- Push to GitHub (if --setup-github and TASK_CICD was not already run) ---
+if [[ "${SETUP_GITHUB:-}" == "true" && "${TASK_CICD:-}" != "true" ]]; then
   echo
-  echo "=== Backup Secrets (Disaster Recovery) ==="
-  # IMPORTANT: When Backup Secrets is selected, print plaintext backup secrets here.
-  # Do not remove/redact this section; operators rely on it for DR copy-out.
-  echo "Copy these values now and store them in your secure disaster-recovery vault."
-  if [[ -n "$TOKEN_SECRET_NAME" ]]; then
-    echo "- TOKEN_ENCRYPTION_KEY source: $TOKEN_SECRET_NAME"
-  else
-    echo "- TOKEN_ENCRYPTION_KEY source: <UNAVAILABLE>"
+  echo "=== Push to GitHub Environment ==="
+  prereqs_require_cmd gh prereqs_hint_gh_cli
+  if ! gh auth status >/dev/null 2>&1; then
+    echo "Error: gh CLI not authenticated. Run 'gh auth login' first." >&2
+    exit 1
   fi
-  if [[ -n "$TOKEN_SECRET_VALUE" ]]; then
-    echo "  TOKEN_ENCRYPTION_KEY: $TOKEN_SECRET_VALUE"
-  else
-    echo "  TOKEN_ENCRYPTION_KEY: <UNAVAILABLE - check Secret Manager access and retrieve manually>"
-  fi
-  if [[ -n "$DB_SECRET_NAME" ]]; then
-    echo "- DATABASE_PASSWORD source: $DB_SECRET_NAME"
-  else
-    echo "- DATABASE_PASSWORD source: <UNAVAILABLE>"
-  fi
-  if [[ -n "$DB_SECRET_VALUE" ]]; then
-    echo "  DATABASE_PASSWORD: $DB_SECRET_VALUE"
-  else
-    echo "  DATABASE_PASSWORD: <UNAVAILABLE - check Secret Manager access and retrieve manually>"
-  fi
+  REPO="$(prompt_github_repo_for_actions "$REPO_ROOT")"
+  ENV_NAME="$STAGE"
+  DEPLOY_SA="$(terraform output -raw deploy_service_account_email 2>/dev/null || true)"
+
+  gh api -X PUT "repos/$REPO/environments/$ENV_NAME" >/dev/null 2>&1 || true
+  gh variable set GCP_PROJECT_ID --body "$PROJECT_ID" -R "$REPO" 2>/dev/null || true
+  gh variable set GCP_REGION --body "$REGION" -R "$REPO" 2>/dev/null || true
+  gh variable set DEPLOY_TARGET --body "gcp" -R "$REPO" 2>/dev/null || true
+  [[ -n "$DEPLOY_SA" ]] && gh variable set GCP_SERVICE_ACCOUNT --body "$DEPLOY_SA" -R "$REPO" 2>/dev/null || true
+  gh variable set STAGE_NAME --env "$ENV_NAME" --body "$STAGE" -R "$REPO" 2>/dev/null || true
+  gh variable set SLACK_CLIENT_ID --env "$ENV_NAME" --body "$SLACK_CLIENT_ID" -R "$REPO" 2>/dev/null || true
+  gh secret set SLACK_SIGNING_SECRET --env "$ENV_NAME" --body "$SLACK_SIGNING_SECRET" -R "$REPO"
+  gh secret set SLACK_CLIENT_SECRET --env "$ENV_NAME" --body "$SLACK_CLIENT_SECRET" -R "$REPO"
+  gh secret set TOKEN_ENCRYPTION_KEY --env "$ENV_NAME" --body "$TOKEN_ENCRYPTION_KEY" -R "$REPO"
+  gh secret set DATABASE_PASSWORD --env "$ENV_NAME" --body "$DATABASE_PASSWORD" -R "$REPO"
+  [[ -n "${DATABASE_USER:-}" ]] && gh secret set DATABASE_USER --env "$ENV_NAME" --body "$DATABASE_USER" -R "$REPO"
+  echo "GitHub environment '$ENV_NAME' configured for repo $REPO."
 fi
+
+echo
+echo "=== Deploy Complete ==="
+
