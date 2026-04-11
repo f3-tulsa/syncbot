@@ -70,7 +70,7 @@ locals {
     SLACK_CLIENT_ID      = var.slack_client_id
     SLACK_CLIENT_SECRET  = var.slack_client_secret
     SLACK_BOT_SCOPES     = var.slack_bot_scopes
-    TOKEN_ENCRYPTION_KEY = var.token_encryption_key
+    DATA_ENCRYPTION_KEY = var.data_encryption_key
     DATABASE_PASSWORD    = var.database_password
   }
 }

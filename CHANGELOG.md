@@ -9,13 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Deploy script: `--bootstrap`, `--setup-github` (both modes), `CLOUD_PROVIDER` auto-select, `_SM_ID` secret resolution, auto-gen `TOKEN_ENCRYPTION_KEY`/`DATABASE_PASSWORD`, interactive config save
+- Deploy script: `--bootstrap`, `--setup-github` (both modes), `CLOUD_PROVIDER` auto-select, `_SM_ID` secret resolution, auto-gen `DATA_ENCRYPTION_KEY`/`DATABASE_PASSWORD`, interactive config save
 - `.env.deploy.example` for cloud deployments (separate from `.env.example`)
 - CI: bootstrap sync, `workflow_dispatch`, concurrency groups, `pip-audit`, `GITHUB_STEP_SUMMARY`
 - CloudWatch Logs 30-day retention; X-Ray tracing now optional
 
 ### Changed
 
+- **`TOKEN_ENCRYPTION_KEY` renamed to `DATA_ENCRYPTION_KEY`:** More accurately reflects its use (encrypts OAuth tokens, federation keys, and backup HMAC). SAM parameter is `DataEncryptionKey`; Terraform variable is `data_encryption_key`. Legacy `TOKEN_ENCRYPTION_KEY` env var still accepted as fallback.
 - **Database deploy naming:** User-facing env files, GitHub environment variables, and docs use unprefixed `DATABASE_*` names instead of `EXISTING_DATABASE_*`. CloudFormation `ExistingDatabase*` and Terraform `existing_db_*` identifiers are unchanged. Deploy scripts still honor legacy `EXISTING_DATABASE_*` env vars. Interactive deploy applies the same alias layer as the `--env` path; non-interactive AWS `--setup-github` pushes the full external-DB variable set for CI parity.
 - AWS: Lambda Function URLs replace API Gateway; Secrets Manager removed (secrets via SAM `NoEcho` params)
 - GCP: Secret Manager removed (secrets via sensitive Terraform variables)

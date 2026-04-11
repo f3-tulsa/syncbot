@@ -85,9 +85,9 @@ Parameters:
     Type: String
     NoEcho: true
 
-  TokenEncryptionKey:
+  DataEncryptionKey:
     Description: >
-      Passphrase for Fernet bot-token encryption at rest (TOKEN_ENCRYPTION_KEY).
+      Passphrase for Fernet data-at-rest encryption (DATA_ENCRYPTION_KEY).
       Generate with: python3 -c "import secrets; print(secrets.token_urlsafe(36))"
     Type: String
     NoEcho: true
@@ -721,7 +721,7 @@ Resources:
             - !Ref DatabaseUser
           DATABASE_PASSWORD: !Ref DatabasePassword
           DATABASE_SCHEMA: !Ref DatabaseSchema
-          TOKEN_ENCRYPTION_KEY: !Ref TokenEncryptionKey
+          DATA_ENCRYPTION_KEY: !Ref DataEncryptionKey
           REQUIRE_ADMIN: !Ref RequireAdmin
           LOG_LEVEL: !Ref LogLevel
           SOFT_DELETE_RETENTION_DAYS: !Sub "${SoftDeleteRetentionDays}"

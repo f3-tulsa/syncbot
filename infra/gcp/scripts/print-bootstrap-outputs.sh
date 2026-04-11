@@ -36,5 +36,5 @@ echo "Service URL         = $(terraform output -raw service_url 2>/dev/null || e
 echo ""
 echo "For deploy-gcp.yml also set: GCP_WORKLOAD_IDENTITY_PROVIDER (after configuring WIF for GitHub)."
 echo ""
-echo "TOKEN_ENCRYPTION_KEY is provided via .env.deploy file or Terraform variable."
+echo "DATA_ENCRYPTION_KEY is provided via .env.deploy file or Terraform variable."
 echo "Back it up securely (see docs/DEPLOY.md)."

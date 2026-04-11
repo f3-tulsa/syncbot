@@ -14,7 +14,7 @@ Minimal Terraform scaffold to run SyncBot on Google Cloud. Satisfies the [infras
 
    ```bash
    cp .env.deploy.example .env.deploy.test
-   # Edit with your Slack credentials, TOKEN_ENCRYPTION_KEY, DATABASE_PASSWORD, etc.
+   # Edit with your Slack credentials, DATA_ENCRYPTION_KEY, DATABASE_PASSWORD, etc.
    ```
 
 2. **Deploy non-interactively:**
@@ -42,7 +42,7 @@ Minimal Terraform scaffold to run SyncBot on Google Cloud. Satisfies the [infras
 | `slack_signing_secret` | Slack app signing secret (sensitive) |
 | `slack_client_id` | Slack app client ID |
 | `slack_client_secret` | Slack app client secret (sensitive) |
-| `token_encryption_key` | Encryption key for stored OAuth tokens (sensitive) |
+| `data_encryption_key` | Encryption key for data at rest — OAuth tokens and federation keys (sensitive) |
 | `database_password` | App database password (sensitive) |
 | `database_user` | App database username (optional; defaults to `sbapp_{stage}`) |
 | `use_existing_database` | If `true`, use `existing_db_*` vars instead of creating Cloud SQL |

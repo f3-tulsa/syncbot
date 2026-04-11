@@ -171,10 +171,10 @@ variable "slack_user_scopes" {
   description = "Comma-separated user OAuth scopes for Cloud Run (SLACK_USER_SCOPES). Must match slack-manifest.json oauth_config.scopes.user."
 }
 
-variable "token_encryption_key" {
+variable "data_encryption_key" {
   type        = string
   sensitive   = true
-  description = "TOKEN_ENCRYPTION_KEY for Fernet bot-token encryption. Generate with: python3 -c \"import secrets; print(secrets.token_urlsafe(36))\""
+  description = "DATA_ENCRYPTION_KEY for Fernet data-at-rest encryption. Generate with: python3 -c \"import secrets; print(secrets.token_urlsafe(36))\""
 }
 
 variable "database_password" {

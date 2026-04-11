@@ -27,7 +27,7 @@ The launcher discovers `infra/<provider>/scripts/deploy.sh`, shows a numbered me
 
 **GitHub setup:** Add `--setup-github` to push config to GitHub environment variables and secrets after deploy. Works with both `--env` (non-interactive) and interactive modes: `./deploy.sh --env test --setup-github aws` or `./deploy.sh --setup-github aws`.
 
-**Secret auto-generation:** If `TOKEN_ENCRYPTION_KEY` is empty, a secure key is generated automatically and saved back to the `.env.deploy` file. Similarly, when using `DbSetup` (admin credentials provided), `DATABASE_PASSWORD` and `DATABASE_USER` are auto-generated if empty.
+**Secret auto-generation:** If `DATA_ENCRYPTION_KEY` is empty, a secure key is generated automatically and saved back to the `.env.deploy` file. Similarly, when using `DbSetup` (admin credentials provided), `DATABASE_PASSWORD` and `DATABASE_USER` are auto-generated if empty.
 
 **Interactive save:** After a successful interactive deploy, the script prompts to save all config to `.env.deploy.<stage>` for future non-interactive runs.
 
@@ -60,7 +60,7 @@ Runs from repo root (or via `./deploy.sh` → **aws**). It:
 3. **Bootstrap probe** — Reads bootstrap stack outputs if the stack exists (for suggested stack names and later CI/CD). Full **bootstrap** create/sync runs only if you select it in **Deploy Tasks** (see below).
 4. **App stack identity** — Prompts for stage (`test`/`prod`) and stack name; detects an existing CloudFormation stack for update.
 5. **Deploy Tasks** — Multi-select menu (comma-separated, default all): **Bootstrap** (create/sync bootstrap stack; respects `SYNCBOT_SKIP_BOOTSTRAP_SYNC=1` for sync), **Build/Deploy** (full config + SAM), **CI/CD** (`gh` / GitHub Actions), **Slack API**. Omitting **Build/Deploy** requires an existing stack for tasks that need live outputs.
-6. **Configuration** (if Build/Deploy selected) — **Database source** (stack-managed RDS vs existing RDS host) and **engine** (MySQL vs PostgreSQL). **Slack app credentials** (signing secret, client secret, client ID). **App secrets** (`TOKEN_ENCRYPTION_KEY`, `DATABASE_PASSWORD`, optionally `DATABASE_USER`) — passed as SAM parameters with `NoEcho` (no Secrets Manager dependency). **Existing database host** mode: RDS endpoint, admin user/password, optional **ExistingDatabasePort** (blank = engine default; use for non-standard ports e.g. TiDB **4000**), optional **ExistingDatabaseUsernamePrefix** (e.g. TiDB Cloud cluster prefix `abc123`; a dot separator is added automatically; prepended to **ExistingDatabaseAdminUser** and the default app user `{prefix}.sbapp_{stage}` — use bare admin names like `root` when set), optional **ExistingDatabaseAppUsername** (full app username override when the default would exceed provider limits, e.g. MySQL 32 chars), whether to **create a dedicated app DB user** and whether to run **`CREATE DATABASE IF NOT EXISTS`**, **public vs private** network mode, and for **private** mode: subnet IDs and Lambda security group (with optional auto-detect and **connectivity preflight** using the effective DB port). **New RDS in stack** mode: summarizes auto-generated DB users and prompts for **DatabaseSchema** and **DatabaseAdminPassword**. **Log level** (numbered list `1`–`5` with `Choose level [N]:`, default from prior stack or **INFO**), **deploy summary**, then **SAM build** (`--use-container`) and **sam deploy**.
+6. **Configuration** (if Build/Deploy selected) — **Database source** (stack-managed RDS vs existing RDS host) and **engine** (MySQL vs PostgreSQL). **Slack app credentials** (signing secret, client secret, client ID). **App secrets** (`DATA_ENCRYPTION_KEY`, `DATABASE_PASSWORD`, optionally `DATABASE_USER`) — passed as SAM parameters with `NoEcho` (no Secrets Manager dependency). **Existing database host** mode: RDS endpoint, admin user/password, optional **ExistingDatabasePort** (blank = engine default; use for non-standard ports e.g. TiDB **4000**), optional **ExistingDatabaseUsernamePrefix** (e.g. TiDB Cloud cluster prefix `abc123`; a dot separator is added automatically; prepended to **ExistingDatabaseAdminUser** and the default app user `{prefix}.sbapp_{stage}` — use bare admin names like `root` when set), optional **ExistingDatabaseAppUsername** (full app username override when the default would exceed provider limits, e.g. MySQL 32 chars), whether to **create a dedicated app DB user** and whether to run **`CREATE DATABASE IF NOT EXISTS`**, **public vs private** network mode, and for **private** mode: subnet IDs and Lambda security group (with optional auto-detect and **connectivity preflight** using the effective DB port). **New RDS in stack** mode: summarizes auto-generated DB users and prompts for **DatabaseSchema** and **DatabaseAdminPassword**. **Log level** (numbered list `1`–`5` with `Choose level [N]:`, default from prior stack or **INFO**), **deploy summary**, then **SAM build** (`--use-container`) and **sam deploy**.
 7. **Post-deploy** — According to selected tasks: stack outputs, `slack-manifest_<stage>.json`, Slack API, **`gh`** setup, and deploy receipt under `deploy-receipts/` (gitignored).
 
 ### GCP: `infra/gcp/scripts/deploy.sh`
@@ -71,7 +71,7 @@ Runs from repo root (or `./deploy.sh` → **gcp**). It:
 2. Guides **auth** (`gcloud auth login` plus `gcloud auth application-default login`; quota project as needed).
 3. **Project / stage / existing service** — Prompts for project, region, stage; can detect existing Cloud Run for defaults.
 4. **Deploy Tasks** — Multi-select menu (comma-separated, default all): **Build/Deploy** (full Terraform flow), **CI/CD**, **Slack API**. Skipping **Build/Deploy** requires existing Terraform state/outputs for tasks that need them.
-5. **Secrets** (if Build/Deploy selected) — Prompts for `SLACK_SIGNING_SECRET`, `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `TOKEN_ENCRYPTION_KEY`, `DATABASE_PASSWORD`, and optionally `DATABASE_USER`. Passed as sensitive Terraform variables (no GCP Secret Manager dependency).
+5. **Secrets** (if Build/Deploy selected) — Prompts for `SLACK_SIGNING_SECRET`, `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `DATA_ENCRYPTION_KEY`, `DATABASE_PASSWORD`, and optionally `DATABASE_USER`. Passed as sensitive Terraform variables (no GCP Secret Manager dependency).
 6. **Terraform** (if Build/Deploy selected) — Prompts for DB mode, `cloud_run_image` (required), log level, etc.; `terraform init` / `plan` / `apply` in `infra/gcp` (no separate y/n gates on plan/apply).
 7. **Post-deploy** — According to selected tasks: manifest, Slack API, deploy receipt, **`gh`**, `print-bootstrap-outputs.sh`.
 
@@ -163,7 +163,7 @@ Use **`sam deploy --guided`** the first time if you prefer prompts. For **existi
 
 **samconfig:** Predefined profiles in `samconfig.toml` (`test-new-rds`, `test-existing-rds`, etc.) — adjust placeholders before use.
 
-**Secrets:** `TOKEN_ENCRYPTION_KEY`, `DATABASE_PASSWORD`, and optionally `DATABASE_USER` are SAM parameters with `NoEcho: true`. The deploy script auto-generates `TOKEN_ENCRYPTION_KEY` if empty and saves it back to the `.env.deploy` file. Back it up securely — if lost, all workspaces must reinstall. When using `DbSetup` (admin creds provided), `DATABASE_PASSWORD` and `DATABASE_USER` are also auto-generated if empty.
+**Secrets:** `DATA_ENCRYPTION_KEY`, `DATABASE_PASSWORD`, and optionally `DATABASE_USER` are SAM parameters with `NoEcho: true`. The deploy script auto-generates `DATA_ENCRYPTION_KEY` if empty and saves it back to the `.env.deploy` file. Back it up securely — if lost, all workspaces must reinstall. When using `DbSetup` (admin creds provided), `DATABASE_PASSWORD` and `DATABASE_USER` are also auto-generated if empty.
 
 **CloudWatch Logs:** Log retention is set to **30 days** in the SAM template (`RetentionInDays: 30`). Adjust in `infra/aws/template.yaml` if needed.
 
@@ -207,7 +207,7 @@ Configure **per-environment** (`test` / `prod`) variables and secrets so they ma
 | Var | `DATABASE_USERNAME_PREFIX` | Optional. Provider-specific username prefix (e.g. TiDB Cloud `abc123`; dot separator added automatically). Prepended to admin and default app user `{prefix}.sbapp_{stage}` in the bootstrap Lambda; use bare `DATABASE_ADMIN_USER` (e.g. `root`). Empty for RDS/standard MySQL. |
 | Var | `DATABASE_APP_USERNAME` | Optional. Full dedicated app DB username (bypasses prefix + default `sbapp_{stage}`). Use if the auto name exceeds provider limits. Empty = default. |
 | Secret | `SLACK_SIGNING_SECRET`, `SLACK_CLIENT_SECRET` | |
-| Secret | `TOKEN_ENCRYPTION_KEY` | Required; back up securely |
+| Secret | `DATA_ENCRYPTION_KEY` | Required; back up securely |
 | Secret | `DATABASE_PASSWORD` | App database password |
 | Secret | `DATABASE_USER` | Optional; pre-existing app DB user |
 | Secret | `DATABASE_ADMIN_PASSWORD` | When `DATABASE_HOST` is set |
@@ -237,7 +237,7 @@ terraform plan -var="project_id=YOUR_PROJECT_ID" -var="stage=test"
 terraform apply -var="project_id=YOUR_PROJECT_ID" -var="stage=test"
 ```
 
-Pass secrets as sensitive Terraform variables (`-var="slack_signing_secret=..."`, `-var="token_encryption_key=..."`, etc.). Set **`cloud_run_image`** after building and pushing the container. Capture outputs: service URL, region, project, Artifact Registry, deploy service account.
+Pass secrets as sensitive Terraform variables (`-var="slack_signing_secret=..."`, `-var="data_encryption_key=..."`, etc.). Set **`cloud_run_image`** after building and pushing the container. Capture outputs: service URL, region, project, Artifact Registry, deploy service account.
 
 ```bash
 ./infra/gcp/scripts/print-bootstrap-outputs.sh
@@ -327,9 +327,9 @@ Reuse one RDS with **different `DatabaseSchema`** per app/environment; set **Exi
 
 ### Secrets Manager removal (AWS)
 
-Previous versions stored `TOKEN_ENCRYPTION_KEY` and database passwords in AWS Secrets Manager. This has been removed to reduce costs and complexity.
+Previous versions stored `DATA_ENCRYPTION_KEY` and database passwords in AWS Secrets Manager. This has been removed to reduce costs and complexity.
 
-**Before upgrading**, retrieve your existing `TOKEN_ENCRYPTION_KEY`:
+**Before upgrading**, retrieve your existing `DATA_ENCRYPTION_KEY`:
 
 ```bash
 aws secretsmanager get-secret-value \
@@ -337,7 +337,7 @@ aws secretsmanager get-secret-value \
   --query SecretString --output text
 ```
 
-Save this value in your `.env.deploy.<stage>` file as `TOKEN_ENCRYPTION_KEY=<value>`.
+Save this value in your `.env.deploy.<stage>` file as `DATA_ENCRYPTION_KEY=<value>`.
 
 Similarly, if `DATABASE_PASSWORD` was in Secrets Manager:
 
@@ -391,7 +391,7 @@ For teams that store secrets in AWS Secrets Manager or GCP Secret Manager, the d
 ```bash
 # .env.deploy.test
 SLACK_SIGNING_SECRET_SM_ID=syncbot/slack-signing-secret
-TOKEN_ENCRYPTION_KEY_SM_ID=syncbot/token-encryption-key
+DATA_ENCRYPTION_KEY_SM_ID=syncbot/token-encryption-key
 ```
 
 Direct values always take precedence over `_SM_ID` refs. The resolution happens once in the root `deploy.sh` after sourcing the env file, using the `CLOUD_PROVIDER` to select `aws secretsmanager` or `gcloud secrets`. See `.env.deploy.example` for commented examples.

@@ -130,7 +130,7 @@ jobs:
             --parameter-overrides \
               "Stage=${{ vars.STAGE_NAME }} \
                DatabaseEngine=${{ vars.DATABASE_ENGINE || 'mysql' }} \
-               TokenEncryptionKey=${{ secrets.TOKEN_ENCRYPTION_KEY }} \
+               DataEncryptionKey=${{ secrets.DATA_ENCRYPTION_KEY }} \
                DatabasePassword=${{ secrets.DATABASE_PASSWORD }} \
                DatabaseUser=${{ secrets.DATABASE_USER }} \
                ExistingDatabaseHost=${{ vars.DATABASE_HOST }} \
@@ -253,7 +253,7 @@ jobs:
             --parameter-overrides \
               "Stage=${{ vars.STAGE_NAME }} \
                DatabaseEngine=${{ vars.DATABASE_ENGINE || 'mysql' }} \
-               TokenEncryptionKey=${{ secrets.TOKEN_ENCRYPTION_KEY }} \
+               DataEncryptionKey=${{ secrets.DATA_ENCRYPTION_KEY }} \
                DatabasePassword=${{ secrets.DATABASE_PASSWORD }} \
                DatabaseUser=${{ secrets.DATABASE_USER }} \
                ExistingDatabaseHost=${{ vars.DATABASE_HOST }} \

@@ -450,7 +450,7 @@ configure_github_actions_gcp() {
     echo "Environment variable STAGE_NAME updated for '$env_name'."
   fi
 
-  if prompt_yn "Set environment secrets for '$env_name' now (Slack secrets, TOKEN_ENCRYPTION_KEY, DATABASE_PASSWORD)?" "n"; then
+  if prompt_yn "Set environment secrets for '$env_name' now (Slack secrets, DATA_ENCRYPTION_KEY, DATABASE_PASSWORD)?" "n"; then
     if [[ -z "${SLACK_SIGNING_SECRET:-}" ]]; then
       SLACK_SIGNING_SECRET="$(required_from_env_or_prompt "SLACK_SIGNING_SECRET" "SlackSigningSecret" "secret")"
     fi
@@ -459,7 +459,7 @@ configure_github_actions_gcp() {
     fi
     gh secret set SLACK_SIGNING_SECRET --env "$env_name" --body "$SLACK_SIGNING_SECRET" -R "$repo"
     gh secret set SLACK_CLIENT_SECRET --env "$env_name" --body "$SLACK_CLIENT_SECRET" -R "$repo"
-    gh secret set TOKEN_ENCRYPTION_KEY --env "$env_name" --body "$TOKEN_ENCRYPTION_KEY" -R "$repo"
+    gh secret set DATA_ENCRYPTION_KEY --env "$env_name" --body "$DATA_ENCRYPTION_KEY" -R "$repo"
     gh secret set DATABASE_PASSWORD --env "$env_name" --body "$DATABASE_PASSWORD" -R "$repo"
     [[ -n "${DATABASE_USER:-}" ]] && gh secret set DATABASE_USER --env "$env_name" --body "$DATABASE_USER" -R "$repo"
     echo "GitHub environment secrets updated for '$env_name'."
@@ -492,16 +492,17 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
   DATABASE_APP_USERNAME="${DATABASE_APP_USERNAME:-${EXISTING_DATABASE_APP_USERNAME:-}}"
   DATABASE_CREATE_APP_USER="${DATABASE_CREATE_APP_USER:-${EXISTING_DATABASE_CREATE_APP_USER:-true}}"
   DATABASE_CREATE_SCHEMA="${DATABASE_CREATE_SCHEMA:-${EXISTING_DATABASE_CREATE_SCHEMA:-true}}"
+  DATA_ENCRYPTION_KEY="${DATA_ENCRYPTION_KEY:-${TOKEN_ENCRYPTION_KEY:-}}"
   USE_EXISTING="false"
   [[ -n "$DATABASE_HOST" ]] && USE_EXISTING="true"
 
-  # Auto-generate TOKEN_ENCRYPTION_KEY if empty
-  if [[ -z "${TOKEN_ENCRYPTION_KEY:-}" ]]; then
-    TOKEN_ENCRYPTION_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(36))')"
-    echo "Generated TOKEN_ENCRYPTION_KEY=$TOKEN_ENCRYPTION_KEY"
+  # Auto-generate DATA_ENCRYPTION_KEY if empty
+  if [[ -z "${DATA_ENCRYPTION_KEY:-}" ]]; then
+    DATA_ENCRYPTION_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(36))')"
+    echo "Generated DATA_ENCRYPTION_KEY=$DATA_ENCRYPTION_KEY"
     echo "IMPORTANT: Store this key securely. You need it for disaster recovery."
     if [[ -n "${ENV_FILE_PATH:-}" ]]; then
-      update_env_file "$ENV_FILE_PATH" "TOKEN_ENCRYPTION_KEY" "$TOKEN_ENCRYPTION_KEY"
+      update_env_file "$ENV_FILE_PATH" "DATA_ENCRYPTION_KEY" "$DATA_ENCRYPTION_KEY"
       echo "  (saved to $ENV_FILE_PATH)"
     fi
   fi
@@ -541,7 +542,7 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
     "-var=slack_signing_secret=${SLACK_SIGNING_SECRET:?SLACK_SIGNING_SECRET required}"
     "-var=slack_client_id=${SLACK_CLIENT_ID:?SLACK_CLIENT_ID required}"
     "-var=slack_client_secret=${SLACK_CLIENT_SECRET:?SLACK_CLIENT_SECRET required}"
-    "-var=token_encryption_key=${TOKEN_ENCRYPTION_KEY:?TOKEN_ENCRYPTION_KEY required}"
+    "-var=data_encryption_key=${DATA_ENCRYPTION_KEY:?DATA_ENCRYPTION_KEY required}"
     "-var=database_password=${DATABASE_PASSWORD:?DATABASE_PASSWORD required}"
     "-var=database_backend=${DATABASE_ENGINE:-mysql}"
     "-var=database_port=${DATABASE_PORT:-3306}"
@@ -597,7 +598,7 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
       gh variable set SLACK_CLIENT_ID --env "$ENV_NAME" --body "$SLACK_CLIENT_ID" -R "$REPO" 2>/dev/null || true
       gh secret set SLACK_SIGNING_SECRET --env "$ENV_NAME" --body "$SLACK_SIGNING_SECRET" -R "$REPO"
       gh secret set SLACK_CLIENT_SECRET --env "$ENV_NAME" --body "$SLACK_CLIENT_SECRET" -R "$REPO"
-      gh secret set TOKEN_ENCRYPTION_KEY --env "$ENV_NAME" --body "$TOKEN_ENCRYPTION_KEY" -R "$REPO"
+      gh secret set DATA_ENCRYPTION_KEY --env "$ENV_NAME" --body "$DATA_ENCRYPTION_KEY" -R "$REPO"
       gh secret set DATABASE_PASSWORD --env "$ENV_NAME" --body "$DATABASE_PASSWORD" -R "$REPO"
       [[ -n "${DATABASE_USER:-}" ]] && gh secret set DATABASE_USER --env "$ENV_NAME" --body "$DATABASE_USER" -R "$REPO"
       echo "GitHub environment '$ENV_NAME' configured for repo $REPO."
@@ -629,6 +630,7 @@ DATABASE_USERNAME_PREFIX="${DATABASE_USERNAME_PREFIX:-${EXISTING_DATABASE_USERNA
 DATABASE_APP_USERNAME="${DATABASE_APP_USERNAME:-${EXISTING_DATABASE_APP_USERNAME:-}}"
 DATABASE_CREATE_APP_USER="${DATABASE_CREATE_APP_USER:-${EXISTING_DATABASE_CREATE_APP_USER:-true}}"
 DATABASE_CREATE_SCHEMA="${DATABASE_CREATE_SCHEMA:-${EXISTING_DATABASE_CREATE_SCHEMA:-true}}"
+DATA_ENCRYPTION_KEY="${DATA_ENCRYPTION_KEY:-${TOKEN_ENCRYPTION_KEY:-}}"
 
 echo "=== Project And Region ==="
 PROJECT_ID="$(prompt_line "GCP project_id" "${GCP_PROJECT_ID:-}")"
@@ -843,16 +845,16 @@ echo
 echo "=== App Secrets ==="
 echo "Secrets are passed directly as sensitive Terraform variables (no GCP Secret Manager)."
 
-if [[ -z "${TOKEN_ENCRYPTION_KEY:-}" ]]; then
-  TOKEN_ENCRYPTION_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(36))')"
-  echo "Generated TOKEN_ENCRYPTION_KEY=$TOKEN_ENCRYPTION_KEY"
+if [[ -z "${DATA_ENCRYPTION_KEY:-}" ]]; then
+  DATA_ENCRYPTION_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(36))')"
+  echo "Generated DATA_ENCRYPTION_KEY=$DATA_ENCRYPTION_KEY"
   echo "IMPORTANT: Store this key securely. You need it for disaster recovery."
 fi
 
 SLACK_SIGNING_SECRET="$(required_from_env_or_prompt "SLACK_SIGNING_SECRET" "SlackSigningSecret" "secret")"
 SLACK_CLIENT_ID="$(required_from_env_or_prompt "SLACK_CLIENT_ID" "SlackClientID")"
 SLACK_CLIENT_SECRET="$(required_from_env_or_prompt "SLACK_CLIENT_SECRET" "SlackClientSecret" "secret")"
-TOKEN_ENCRYPTION_KEY="$(required_from_env_or_prompt "TOKEN_ENCRYPTION_KEY" "TokenEncryptionKey" "secret")"
+DATA_ENCRYPTION_KEY="$(required_from_env_or_prompt "DATA_ENCRYPTION_KEY" "DataEncryptionKey" "secret")"
 DATABASE_PASSWORD="$(required_from_env_or_prompt "DATABASE_PASSWORD" "DatabasePassword" "secret")"
 
 DATABASE_USER=""
@@ -887,7 +889,7 @@ VARS=(
   "-var=slack_signing_secret=$SLACK_SIGNING_SECRET"
   "-var=slack_client_id=$SLACK_CLIENT_ID"
   "-var=slack_client_secret=$SLACK_CLIENT_SECRET"
-  "-var=token_encryption_key=$TOKEN_ENCRYPTION_KEY"
+  "-var=data_encryption_key=$DATA_ENCRYPTION_KEY"
   "-var=database_password=$DATABASE_PASSWORD"
 )
 [[ -n "$DATABASE_USER" ]] && VARS+=("-var=database_user=$DATABASE_USER")
@@ -1005,7 +1007,7 @@ if prompt_yn "Save config to .env.deploy.${STAGE} for future deploys?" "y"; then
     echo "SLACK_CLIENT_SECRET=$SLACK_CLIENT_SECRET"
     echo "SLACK_CLIENT_ID=$SLACK_CLIENT_ID"
     echo ""
-    echo "TOKEN_ENCRYPTION_KEY=$TOKEN_ENCRYPTION_KEY"
+    echo "DATA_ENCRYPTION_KEY=$DATA_ENCRYPTION_KEY"
     echo ""
     echo "DATABASE_HOST=${DATABASE_HOST:-}"
     [[ -n "${DATABASE_PORT:-}" ]] && echo "DATABASE_PORT=$DATABASE_PORT"
@@ -1042,7 +1044,7 @@ if [[ "${SETUP_GITHUB:-}" == "true" && "${TASK_CICD:-}" != "true" ]]; then
   gh variable set SLACK_CLIENT_ID --env "$ENV_NAME" --body "$SLACK_CLIENT_ID" -R "$REPO" 2>/dev/null || true
   gh secret set SLACK_SIGNING_SECRET --env "$ENV_NAME" --body "$SLACK_SIGNING_SECRET" -R "$REPO"
   gh secret set SLACK_CLIENT_SECRET --env "$ENV_NAME" --body "$SLACK_CLIENT_SECRET" -R "$REPO"
-  gh secret set TOKEN_ENCRYPTION_KEY --env "$ENV_NAME" --body "$TOKEN_ENCRYPTION_KEY" -R "$REPO"
+  gh secret set DATA_ENCRYPTION_KEY --env "$ENV_NAME" --body "$DATA_ENCRYPTION_KEY" -R "$REPO"
   gh secret set DATABASE_PASSWORD --env "$ENV_NAME" --body "$DATABASE_PASSWORD" -R "$REPO"
   [[ -n "${DATABASE_USER:-}" ]] && gh secret set DATABASE_USER --env "$ENV_NAME" --body "$DATABASE_USER" -R "$REPO"
   echo "GitHub environment '$ENV_NAME' configured for repo $REPO."
