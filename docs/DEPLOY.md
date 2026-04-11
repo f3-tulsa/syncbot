@@ -196,21 +196,21 @@ Configure **per-environment** (`test` / `prod`) variables and secrets so they ma
 | Var | `LOG_LEVEL` | Optional. `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. Passed to SAM as `LogLevel`; defaults to `INFO` in the workflow when unset. |
 | Var | `SLACK_CLIENT_ID` | From Slack app |
 | Var | `DATABASE_ENGINE` | `mysql` or `postgresql` (workflow defaults to `mysql` if unset) |
-| Var | `EXISTING_DATABASE_HOST` | Empty for **new** RDS in stack |
-| Var | `EXISTING_DATABASE_ADMIN_USER` | When using existing host |
-| Var | `EXISTING_DATABASE_NETWORK_MODE` | `public` or `private` |
-| Var | `EXISTING_DATABASE_SUBNET_IDS_CSV` | **Private** mode: comma-separated subnet IDs (no spaces) |
-| Var | `EXISTING_DATABASE_LAMBDA_SECURITY_GROUP_ID` | **Private** mode: Lambda ENI security group |
-| Var | `EXISTING_DATABASE_PORT` | Optional; non-standard TCP port (e.g. `4000`). Empty = engine default in SAM. |
-| Var | `EXISTING_DATABASE_CREATE_APP_USER` | `true` / `false` (default `true`). Set `false` when the DB cannot create a dedicated app user. |
-| Var | `EXISTING_DATABASE_CREATE_SCHEMA` | `true` / `false` (default `true`). Set `false` when the database/schema already exists. |
-| Var | `EXISTING_DATABASE_USERNAME_PREFIX` | Optional. Provider-specific username prefix (e.g. TiDB Cloud `abc123`; dot separator added automatically). Prepended to admin and default app user `{prefix}.sbapp_{stage}` in the bootstrap Lambda; use bare `EXISTING_DATABASE_ADMIN_USER` (e.g. `root`). Empty for RDS/standard MySQL. |
-| Var | `EXISTING_DATABASE_APP_USERNAME` | Optional. Full dedicated app DB username (bypasses prefix + default `sbapp_{stage}`). Use if the auto name exceeds provider limits. Empty = default. |
+| Var | `DATABASE_HOST` | Empty for **new** RDS in stack |
+| Var | `DATABASE_ADMIN_USER` | When using existing host |
+| Var | `DATABASE_NETWORK_MODE` | `public` or `private` |
+| Var | `DATABASE_SUBNET_IDS_CSV` | **Private** mode: comma-separated subnet IDs (no spaces) |
+| Var | `DATABASE_LAMBDA_SECURITY_GROUP_ID` | **Private** mode: Lambda ENI security group |
+| Var | `DATABASE_PORT` | Optional; non-standard TCP port (e.g. `4000`). Empty = engine default in SAM. |
+| Var | `DATABASE_CREATE_APP_USER` | `true` / `false` (default `true`). Set `false` when the DB cannot create a dedicated app user. |
+| Var | `DATABASE_CREATE_SCHEMA` | `true` / `false` (default `true`). Set `false` when the database/schema already exists. |
+| Var | `DATABASE_USERNAME_PREFIX` | Optional. Provider-specific username prefix (e.g. TiDB Cloud `abc123`; dot separator added automatically). Prepended to admin and default app user `{prefix}.sbapp_{stage}` in the bootstrap Lambda; use bare `DATABASE_ADMIN_USER` (e.g. `root`). Empty for RDS/standard MySQL. |
+| Var | `DATABASE_APP_USERNAME` | Optional. Full dedicated app DB username (bypasses prefix + default `sbapp_{stage}`). Use if the auto name exceeds provider limits. Empty = default. |
 | Secret | `SLACK_SIGNING_SECRET`, `SLACK_CLIENT_SECRET` | |
 | Secret | `TOKEN_ENCRYPTION_KEY` | Required; back up securely |
 | Secret | `DATABASE_PASSWORD` | App database password |
 | Secret | `DATABASE_USER` | Optional; pre-existing app DB user |
-| Secret | `EXISTING_DATABASE_ADMIN_PASSWORD` | When `EXISTING_DATABASE_HOST` is set |
+| Secret | `DATABASE_ADMIN_PASSWORD` | When `DATABASE_HOST` is set |
 | Var | `ENABLE_XRAY` | Optional. `true` / `false`. AWS X-Ray tracing (default `false`). |
 
 The interactive deploy script can set these via `gh` when you opt in. Use `--setup-github` to push config to GitHub — works with both `--env` (non-interactive) and interactive deploys. Re-run that step after changing DB mode or engine so CI stays aligned.
@@ -377,6 +377,10 @@ cp .env.deploy.example .env.deploy.test
 ```
 
 These files are gitignored. For CI/CD, use GitHub environment variables and secrets instead (set via `--setup-github` or manually).
+
+### Database env names (`EXISTING_DATABASE_*` → `DATABASE_*`)
+
+For external / existing RDS flows, GitHub environment **variables** and **secrets** now use unprefixed names (for example `DATABASE_HOST`, `DATABASE_ADMIN_USER`, `secrets.DATABASE_ADMIN_PASSWORD`) instead of `EXISTING_DATABASE_*`. SAM parameter names on the stack are unchanged (`ExistingDatabaseHost`, etc.). The deploy scripts still honor the old `EXISTING_DATABASE_*` names if set, so local env files can migrate gradually; GitHub Actions should use the new names to match `.github/workflows/deploy-aws.yml`.
 
 ---
 

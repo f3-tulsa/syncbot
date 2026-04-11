@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Database deploy naming:** User-facing env files, GitHub environment variables, and docs use unprefixed `DATABASE_*` names instead of `EXISTING_DATABASE_*`. CloudFormation `ExistingDatabase*` and Terraform `existing_db_*` identifiers are unchanged. Deploy scripts still honor legacy `EXISTING_DATABASE_*` env vars. Interactive deploy applies the same alias layer as the `--env` path; non-interactive AWS `--setup-github` pushes the full external-DB variable set for CI parity.
 - AWS: Lambda Function URLs replace API Gateway; Secrets Manager removed (secrets via SAM `NoEcho` params)
 - GCP: Secret Manager removed (secrets via sensitive Terraform variables)
 - `DbSetup` conditional — skipped when `DATABASE_USER` + `DATABASE_PASSWORD` provided directly
