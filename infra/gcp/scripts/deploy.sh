@@ -361,35 +361,90 @@ PY
 }
 
 write_deploy_receipt() {
-  local provider="$1"
-  local stage="$2"
-  local project_or_stack="$3"
-  local region="$4"
-  local service_url="$5"
-  local install_url="$6"
-  local manifest_path="$7"
   local ts_human ts_file receipt_dir receipt_path
+  local api_url="${SYNCBOT_API_URL:-}"
+  local base_url="${api_url%/slack/events}"
+  local oauth_redirect_url=""
+  [[ -n "$base_url" ]] && oauth_redirect_url="${base_url}/slack/oauth_redirect"
 
   ts_human="$(date -u +"%Y-%m-%d %H:%M:%S UTC")"
   ts_file="$(date -u +"%Y%m%dT%H%M%SZ")"
   receipt_dir="$REPO_ROOT/deploy-receipts"
-  receipt_path="$receipt_dir/deploy-${provider}-${stage}-${ts_file}.md"
+  receipt_path="$receipt_dir/deploy-gcp-${STAGE}-${ts_file}.md"
 
   mkdir -p "$receipt_dir"
-  cat >"$receipt_path" <<EOF
+  {
+    cat <<EOF
 # SyncBot Deploy Receipt
 
-- Provider: $provider
-- Stage: $stage
+- Provider: gcp
+- Stage: $STAGE
 - Timestamp: $ts_human
-- Project/Stack: $project_or_stack
-- Region: $region
-- Service URL: ${service_url:-n/a}
-- Slack Install URL: ${install_url:-n/a}
-- Slack Manifest: ${manifest_path:-n/a}
+- Project/Stack: $PROJECT_ID
+- Region: $REGION
+
+## Slack URLs
+- Events/API URL: ${api_url:-n/a}
+- Install URL: ${SYNCBOT_INSTALL_URL:-n/a}
+- OAuth Redirect URL: ${oauth_redirect_url:-n/a}
+- Slack Manifest: ${SLACK_MANIFEST_GENERATED_PATH:-n/a}
+
+## Configuration
+- GCP_PROJECT_ID=$PROJECT_ID
+- CLOUD_RUN_IMAGE=${CLOUD_IMAGE:-}
+- DATABASE_ENGINE=${DATABASE_ENGINE:-}
+- DATABASE_SCHEMA=${DATABASE_SCHEMA:-}
+- DATABASE_HOST=${DATABASE_HOST:-}
+- DATABASE_PORT=${DATABASE_PORT:-}
+- DATABASE_USER=${DATABASE_USER:-}
+- DATABASE_TLS_ENABLED=${DATABASE_TLS_ENABLED:-}
+- LOG_LEVEL=${LOG_LEVEL:-INFO}
+- REQUIRE_ADMIN=${REQUIRE_ADMIN:-true}
+- SOFT_DELETE_RETENTION_DAYS=${SOFT_DELETE_RETENTION_DAYS:-30}
+- SYNCBOT_FEDERATION_ENABLED=${SYNCBOT_FEDERATION_ENABLED:-false}
+- SYNCBOT_INSTANCE_ID=${SYNCBOT_INSTANCE_ID:-}
+- SYNCBOT_PUBLIC_URL=${SYNCBOT_PUBLIC_URL:-}
+- PRIMARY_WORKSPACE=${PRIMARY_WORKSPACE:-}
+- SLACK_CLIENT_ID=${SLACK_CLIENT_ID:-}
+- ENABLE_DB_RESET=${ENABLE_DB_RESET:-false}
+
+## Secrets
+- SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:-}
+- SLACK_CLIENT_SECRET=${SLACK_CLIENT_SECRET:-}
+- DATA_ENCRYPTION_KEY=${DATA_ENCRYPTION_KEY:-}
+- DATABASE_PASSWORD=${DATABASE_PASSWORD:-}
+- DATABASE_ADMIN_PASSWORD=${DATABASE_ADMIN_PASSWORD:-}
 EOF
 
+    if [[ "${VERBOSE:-}" == "true" ]]; then
+      echo ""
+      echo "## Terraform Variables"
+      if [[ ${#VARS[@]} -gt 0 ]]; then
+        local v
+        for v in "${VARS[@]}"; do
+          echo "- $v"
+        done
+      else
+        echo "(VARS array not available)"
+      fi
+      echo ""
+      echo "## Slack Manifest (inline)"
+      if [[ -n "${SLACK_MANIFEST_GENERATED_PATH:-}" && -f "${SLACK_MANIFEST_GENERATED_PATH:-}" ]]; then
+        echo '```json'
+        cat "$SLACK_MANIFEST_GENERATED_PATH"
+        echo '```'
+      else
+        echo "(no manifest file generated)"
+      fi
+    fi
+  } >"$receipt_path"
+
   echo "Deploy receipt written: $receipt_path"
+  if [[ "${VERBOSE:-}" == "true" ]]; then
+    echo "--- receipt contents ---"
+    cat "$receipt_path"
+    echo "--- end receipt ---"
+  fi
 }
 
 configure_github_actions_gcp() {
@@ -604,6 +659,10 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
       echo "GitHub environment '$ENV_NAME' configured for repo $REPO."
     fi
   fi
+
+  echo
+  echo "=== Deploy Receipt ==="
+  write_deploy_receipt
 
   echo
   echo "=== Deploy Complete ==="
@@ -973,14 +1032,7 @@ fi
 if [[ "$TASK_BUILD_DEPLOY" == "true" ]]; then
   echo
   echo "=== Deploy Receipt ==="
-  write_deploy_receipt \
-    "gcp" \
-    "$STAGE" \
-    "$PROJECT_ID" \
-    "$REGION" \
-    "$SERVICE_URL" \
-    "$SYNCBOT_INSTALL_URL" \
-    "$SLACK_MANIFEST_GENERATED_PATH"
+  write_deploy_receipt
 
   echo "Next:"
   echo "  1) Build and push container image; update cloud_run_image and re-apply when image changes."

@@ -609,7 +609,7 @@ fi
 
 usage() {
   cat <<EOF
-Usage: ./deploy.sh [--env <stage>] [--bootstrap] [--setup-github] [selection]
+Usage: ./deploy.sh [--env <stage>] [--bootstrap] [--setup-github] [--verbose] [selection]
 
 Options:
   --env <stage>     Source .env.deploy.<stage> and run a non-interactive deploy
@@ -618,6 +618,8 @@ Options:
   --bootstrap       Create/sync the bootstrap stack before app deploy (AWS only).
   --setup-github    Push config to GitHub environment vars/secrets after deploy.
                     Works with --env (non-interactive) or interactive deploys.
+  --verbose         Extended deploy receipts (SAM/Terraform parameters, inline
+                    Slack manifest) and extra screen output for debugging.
 
 No args:
   Scan infra/*/scripts/deploy.sh, show a numbered menu, and run your choice.
@@ -634,6 +636,7 @@ Examples:
   ./deploy.sh --env test --bootstrap aws         # bootstrap + deploy
   ./deploy.sh --env prod --setup-github aws
   ./deploy.sh --setup-github aws                 # interactive deploy + GitHub push
+  ./deploy.sh --env test --verbose aws           # verbose receipt + screen output
 EOF
 }
 
@@ -701,7 +704,7 @@ resolve_script_from_selection() {
 }
 
 main() {
-  local env_name="" setup_github="false" bootstrap="false" selection=""
+  local env_name="" setup_github="false" bootstrap="false" verbose="false" selection=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -722,6 +725,10 @@ main() {
         bootstrap="true"
         shift
         ;;
+      --verbose)
+        verbose="true"
+        shift
+        ;;
       *)
         selection="$1"
         shift
@@ -731,6 +738,7 @@ main() {
 
   export SETUP_GITHUB="$setup_github"
   export BOOTSTRAP="$bootstrap"
+  export VERBOSE="$verbose"
 
   if [[ -n "$env_name" ]]; then
     local env_file="$REPO_ROOT/.env.deploy.$env_name"

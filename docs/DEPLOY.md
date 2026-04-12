@@ -27,6 +27,8 @@ The launcher discovers `infra/<provider>/scripts/deploy.sh`, shows a numbered me
 
 **GitHub setup:** Add `--setup-github` to push config to GitHub environment variables and secrets after deploy. Works with both `--env` (non-interactive) and interactive modes: `./deploy.sh --env test --setup-github aws` or `./deploy.sh --setup-github aws`.
 
+**Verbose output:** Add `--verbose` for extended deploy receipts (SAM/Terraform parameters, inline Slack manifest) and extra screen output during deploy — useful for debugging deploy issues: `./deploy.sh --env test --verbose aws`.
+
 **Secret auto-generation:** If `DATA_ENCRYPTION_KEY` is empty, a secure key is generated automatically and saved back to the `.env.deploy` file. Similarly, when using `DbSetup` (admin credentials provided), `DATABASE_PASSWORD` and `DATABASE_USER` are auto-generated if empty.
 
 **Interactive save:** After a successful interactive deploy, the script prompts to save all config to `.env.deploy.<stage>` for future non-interactive runs.
@@ -61,7 +63,7 @@ Runs from repo root (or via `./deploy.sh` → **aws**). It:
 4. **App stack identity** — Prompts for stage (`test`/`prod`) and stack name; detects an existing CloudFormation stack for update.
 5. **Deploy Tasks** — Multi-select menu (comma-separated, default all): **Bootstrap** (create/sync bootstrap stack; respects `SYNCBOT_SKIP_BOOTSTRAP_SYNC=1` for sync), **Build/Deploy** (full config + SAM), **CI/CD** (`gh` / GitHub Actions), **Slack API**. Omitting **Build/Deploy** requires an existing stack for tasks that need live outputs.
 6. **Configuration** (if Build/Deploy selected) — **Database source** (stack-managed RDS vs existing RDS host) and **engine** (MySQL vs PostgreSQL). **Slack app credentials** (signing secret, client secret, client ID). **App secrets** (`DATA_ENCRYPTION_KEY`, `DATABASE_PASSWORD`, optionally `DATABASE_USER`) — passed as SAM parameters with `NoEcho` (no Secrets Manager dependency). **Existing database host** mode: RDS endpoint, admin user/password, optional **ExistingDatabasePort** (blank = engine default; use for non-standard ports e.g. TiDB **4000**), optional **ExistingDatabaseUsernamePrefix** (e.g. TiDB Cloud cluster prefix `abc123`; a dot separator is added automatically; prepended to **ExistingDatabaseAdminUser** and the default app user `{prefix}.sbapp_{stage}` — use bare admin names like `root` when set), optional **ExistingDatabaseAppUsername** (full app username override when the default would exceed provider limits, e.g. MySQL 32 chars), whether to **create a dedicated app DB user** and whether to run **`CREATE DATABASE IF NOT EXISTS`**, **public vs private** network mode, and for **private** mode: subnet IDs and Lambda security group (with optional auto-detect and **connectivity preflight** using the effective DB port). **New RDS in stack** mode: summarizes auto-generated DB users and prompts for **DatabaseSchema** and **DatabaseAdminPassword**. **Log level** (numbered list `1`–`5` with `Choose level [N]:`, default from prior stack or **INFO**), **deploy summary**, then **SAM build** (`--use-container`) and **sam deploy**.
-7. **Post-deploy** — According to selected tasks: stack outputs, `slack-manifest_<stage>.json`, Slack API, **`gh`** setup, and deploy receipt under `deploy-receipts/` (gitignored).
+7. **Post-deploy** — According to selected tasks: stack outputs, `slack-manifest_<stage>.json`, Slack API, **`gh`** setup, and deploy receipt under `deploy-receipts/` (gitignored). The receipt includes all configuration, secrets, and Slack URLs (events, install, OAuth redirect). Use `--verbose` to also include the full SAM parameters array and inline Slack manifest in the receipt.
 
 ### GCP: `infra/gcp/scripts/deploy.sh`
 
@@ -73,7 +75,7 @@ Runs from repo root (or `./deploy.sh` → **gcp**). It:
 4. **Deploy Tasks** — Multi-select menu (comma-separated, default all): **Build/Deploy** (full Terraform flow), **CI/CD**, **Slack API**. Skipping **Build/Deploy** requires existing Terraform state/outputs for tasks that need them.
 5. **Secrets** (if Build/Deploy selected) — Prompts for `SLACK_SIGNING_SECRET`, `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `DATA_ENCRYPTION_KEY`, `DATABASE_PASSWORD`, and optionally `DATABASE_USER`. Passed as sensitive Terraform variables (no GCP Secret Manager dependency).
 6. **Terraform** (if Build/Deploy selected) — Prompts for DB mode, `cloud_run_image` (required), log level, etc.; `terraform init` / `plan` / `apply` in `infra/gcp` (no separate y/n gates on plan/apply).
-7. **Post-deploy** — According to selected tasks: manifest, Slack API, deploy receipt, **`gh`**, `print-bootstrap-outputs.sh`.
+7. **Post-deploy** — According to selected tasks: manifest, Slack API, deploy receipt, **`gh`**, `print-bootstrap-outputs.sh`. The receipt includes all configuration, secrets, and Slack URLs. Use `--verbose` to also include the full Terraform variables array and inline Slack manifest.
 
 See [infra/gcp/README.md](../infra/gcp/README.md) for Terraform variables and outputs.
 
