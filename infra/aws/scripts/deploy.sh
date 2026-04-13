@@ -29,6 +29,160 @@ SLACK_MANIFEST_GENERATED_PATH=""
 # shellcheck source=/dev/null
 source "$REPO_ROOT/deploy.sh"
 
+# ---------------------------------------------------------------------------
+# SAM deploy with fallback to direct CloudFormation update-stack
+# When sam deploy fails because changeset early validation rejects the update
+# (e.g. AWS::EarlyValidation::ResourceExistenceCheck), retry with update-stack,
+# which skips changeset creation. Optional --update-stack skips sam deploy.
+# Uses globals: STACK_NAME, REGION, S3_BUCKET, PARAMS (update-stack converts PARAMS to JSON)
+# ---------------------------------------------------------------------------
+delete_failed_changesets() {
+  local stack_name="$1" region="$2" names cs
+  names="$(aws cloudformation list-change-sets \
+    --stack-name "$stack_name" \
+    --region "$region" \
+    --query 'Summaries[?Status==`FAILED`].ChangeSetName' \
+    --output text 2>/dev/null || true)"
+  [[ -z "$names" || "$names" == "None" ]] && return 0
+  for cs in $names; do
+    [[ -z "$cs" ]] && continue
+    aws cloudformation delete-change-set \
+      --change-set-name "$cs" \
+      --stack-name "$stack_name" \
+      --region "$region" 2>/dev/null || true
+  done
+}
+
+# Lambda may auto-create /aws/lambda/<name> before CloudFormation's LogGroup resource runs,
+# causing ResourceExistenceCheck / AlreadyExists on deploy. Delete those so CF can create them.
+delete_orphaned_log_groups() {
+  local stack="$1" region="$2" functions fn lg_name
+  functions="$(aws cloudformation list-stack-resources \
+    --stack-name "$stack" \
+    --region "$region" \
+    --query "StackResourceSummaries[?ResourceType=='AWS::Lambda::Function'].PhysicalResourceId" \
+    --output text 2>/dev/null || true)"
+  [[ -z "$functions" || "$functions" == "None" ]] && return 0
+  for fn in $functions; do
+    [[ -z "$fn" ]] && continue
+    lg_name="/aws/lambda/${fn}"
+    if aws logs describe-log-groups \
+      --log-group-name-prefix "$lg_name" \
+      --region "$region" \
+      --query 'logGroups[].logGroupName' \
+      --output text 2>/dev/null | tr '\t' '\n' | grep -Fxq "$lg_name"; then
+      echo "=== Deleting orphaned log group: $lg_name ===" >&2
+      aws logs delete-log-group --log-group-name "$lg_name" --region "$region" 2>/dev/null || true
+    fi
+  done
+}
+
+# GitHub Actions variables cannot be empty strings (HTTP 422). Delete if empty, set otherwise.
+# Piping avoids gh treating --body "" as interactive stdin in some gh versions.
+gh_variable_set_env() {
+  local name="$1" env_name="$2" repo="$3" value="${4:-}"
+  if [[ -z "$value" ]]; then
+    gh variable delete "$name" --env "$env_name" -R "$repo" 2>/dev/null || true
+  else
+    printf '%s' "$value" | gh variable set "$name" --env "$env_name" -R "$repo"
+  fi
+}
+
+# Convert Key=Value lines (stdin or pipe) to JSON for aws cloudformation update-stack --parameters.
+params_to_json() {
+  python3 -c "
+import json, sys
+result = []
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    k, _, v = line.partition('=')
+    result.append({'ParameterKey': k, 'ParameterValue': v})
+print(json.dumps(result))
+"
+}
+
+deploy_via_update_stack() {
+  local packaged template_key template_url cf_params_json
+
+  mkdir -p .aws-sam/build
+  packaged=".aws-sam/build/packaged-for-update-stack.yaml"
+
+  echo "=== SAM Package (for CloudFormation update-stack) ===" >&2
+  sam package \
+    --template-file .aws-sam/build/template.yaml \
+    --s3-bucket "$S3_BUCKET" \
+    --output-template-file "$packaged" \
+    --region "$REGION"
+
+  template_key="packaged-templates/${STACK_NAME}-$(date +%s)-$$.yaml"
+  echo "=== Upload packaged template to s3://${S3_BUCKET}/${template_key} ===" >&2
+  aws s3 cp "$packaged" "s3://${S3_BUCKET}/${template_key}" --region "$REGION"
+
+  template_url="https://${S3_BUCKET}.s3.${REGION}.amazonaws.com/${template_key}"
+
+  cf_params_json="$(printf '%s\n' "${PARAMS[@]}" | params_to_json)"
+
+  echo "=== CloudFormation update-stack ===" >&2
+  aws cloudformation update-stack \
+    --stack-name "$STACK_NAME" \
+    --template-url "$template_url" \
+    --capabilities CAPABILITY_IAM CAPABILITY_AUTO_EXPAND \
+    --region "$REGION" \
+    --parameters "$cf_params_json"
+
+  echo "=== Waiting for stack update to complete ===" >&2
+  aws cloudformation wait stack-update-complete --stack-name "$STACK_NAME" --region "$REGION"
+}
+
+sam_deploy_or_fallback() {
+  if [[ "${UPDATE_STACK:-}" == "true" ]]; then
+    echo "=== SAM Deploy (direct update-stack; --update-stack set) ===" >&2
+    deploy_via_update_stack
+    return 0
+  fi
+
+  local log rc
+  local -a sam_params=()
+  local _p
+  log="$(mktemp)"
+  trap 'rm -f "$log"' RETURN
+
+  for _p in "${PARAMS[@]}"; do
+    [[ "$_p" == *"="?* ]] && sam_params+=("$_p")
+  done
+
+  set +e
+  set -o pipefail
+  sam deploy \
+    -t .aws-sam/build/template.yaml \
+    --stack-name "$STACK_NAME" \
+    --s3-bucket "$S3_BUCKET" \
+    --capabilities CAPABILITY_IAM \
+    --region "$REGION" \
+    --no-fail-on-empty-changeset \
+    --parameter-overrides "${sam_params[@]}" 2>&1 | tee "$log"
+  rc="${PIPESTATUS[0]}"
+  set +o pipefail
+  set -e
+
+  if [[ "$rc" -eq 0 ]]; then
+    return 0
+  fi
+
+  if grep -q 'EarlyValidation::ResourceExistenceCheck' "$log"; then
+    echo "" >&2
+    echo "=== Changeset rejected by CloudFormation early validation; retrying with direct update-stack... ===" >&2
+    delete_failed_changesets "$STACK_NAME" "$REGION" || true
+    delete_orphaned_log_groups "$STACK_NAME" "$REGION" || true
+    deploy_via_update_stack
+    return 0
+  fi
+
+  return "$rc"
+}
+
 prompt_default() {
   local prompt="$1"
   local default="$2"
@@ -481,59 +635,58 @@ configure_github_actions_aws() {
   fi
 
   if prompt_yes_no "Set environment variables for '$env_name' now (AWS_STACK_NAME, STAGE_NAME, DATABASE_SCHEMA, DB host/user vars)?" "y"; then
-    gh variable set AWS_STACK_NAME --env "$env_name" --body "$app_stack_name" -R "$repo"
-    gh variable set STAGE_NAME --env "$env_name" --body "$deploy_stage" -R "$repo"
-    gh variable set DATABASE_SCHEMA --env "$env_name" --body "$database_schema" -R "$repo"
-    gh variable set DATABASE_ENGINE --env "$env_name" --body "$database_engine" -R "$repo"
+    gh_variable_set_env AWS_STACK_NAME "$env_name" "$repo" "$app_stack_name"
+    gh_variable_set_env STAGE_NAME "$env_name" "$repo" "$deploy_stage"
+    gh_variable_set_env DATABASE_SCHEMA "$env_name" "$repo" "$database_schema"
+    gh_variable_set_env DATABASE_ENGINE "$env_name" "$repo" "$database_engine"
     if [[ "$db_mode" == "2" ]]; then
-      gh variable set DATABASE_HOST --env "$env_name" --body "$db_host" -R "$repo"
-      gh variable set DATABASE_ADMIN_USER --env "$env_name" --body "$db_admin_user" -R "$repo"
-      gh variable set DATABASE_NETWORK_MODE --env "$env_name" --body "$db_network_mode" -R "$repo"
+      gh_variable_set_env DATABASE_HOST "$env_name" "$repo" "$db_host"
+      gh_variable_set_env DATABASE_ADMIN_USER "$env_name" "$repo" "$db_admin_user"
+      gh_variable_set_env DATABASE_NETWORK_MODE "$env_name" "$repo" "$db_network_mode"
       if [[ "$db_network_mode" == "private" ]]; then
-        gh variable set DATABASE_SUBNET_IDS_CSV --env "$env_name" --body "$db_subnet_ids_csv" -R "$repo"
-        gh variable set DATABASE_LAMBDA_SECURITY_GROUP_ID --env "$env_name" --body "$db_lambda_sg_id" -R "$repo"
+        gh_variable_set_env DATABASE_SUBNET_IDS_CSV "$env_name" "$repo" "$db_subnet_ids_csv"
+        gh_variable_set_env DATABASE_LAMBDA_SECURITY_GROUP_ID "$env_name" "$repo" "$db_lambda_sg_id"
       else
-        gh variable set DATABASE_SUBNET_IDS_CSV --env "$env_name" --body "" -R "$repo"
-        gh variable set DATABASE_LAMBDA_SECURITY_GROUP_ID --env "$env_name" --body "" -R "$repo"
+        gh_variable_set_env DATABASE_SUBNET_IDS_CSV "$env_name" "$repo" ""
+        gh_variable_set_env DATABASE_LAMBDA_SECURITY_GROUP_ID "$env_name" "$repo" ""
       fi
-      gh variable set DATABASE_PORT --env "$env_name" --body "$db_port" -R "$repo"
-      gh variable set DATABASE_CREATE_APP_USER --env "$env_name" --body "$db_create_app_user" -R "$repo"
-      gh variable set DATABASE_CREATE_SCHEMA --env "$env_name" --body "$db_create_schema" -R "$repo"
-      gh variable set DATABASE_USERNAME_PREFIX --env "$env_name" --body "$db_username_prefix" -R "$repo"
-      gh variable set DATABASE_APP_USERNAME --env "$env_name" --body "$db_app_username" -R "$repo"
+      gh_variable_set_env DATABASE_PORT "$env_name" "$repo" "$db_port"
+      gh_variable_set_env DATABASE_CREATE_APP_USER "$env_name" "$repo" "$db_create_app_user"
+      gh_variable_set_env DATABASE_CREATE_SCHEMA "$env_name" "$repo" "$db_create_schema"
+      gh_variable_set_env DATABASE_USERNAME_PREFIX "$env_name" "$repo" "$db_username_prefix"
+      gh_variable_set_env DATABASE_APP_USERNAME "$env_name" "$repo" "$db_app_username"
     else
       # Clear existing-host vars for new-RDS mode to avoid stale CI config.
-      gh variable set DATABASE_HOST --env "$env_name" --body "" -R "$repo"
-      gh variable set DATABASE_ADMIN_USER --env "$env_name" --body "" -R "$repo"
-      gh variable set DATABASE_NETWORK_MODE --env "$env_name" --body "public" -R "$repo"
-      gh variable set DATABASE_SUBNET_IDS_CSV --env "$env_name" --body "" -R "$repo"
-      gh variable set DATABASE_LAMBDA_SECURITY_GROUP_ID --env "$env_name" --body "" -R "$repo"
-      gh variable set DATABASE_PORT --env "$env_name" --body "" -R "$repo"
-      gh variable set DATABASE_CREATE_APP_USER --env "$env_name" --body "true" -R "$repo"
-      gh variable set DATABASE_CREATE_SCHEMA --env "$env_name" --body "true" -R "$repo"
-      gh variable set DATABASE_USERNAME_PREFIX --env "$env_name" --body "" -R "$repo"
-      gh variable set DATABASE_APP_USERNAME --env "$env_name" --body "" -R "$repo"
+      gh_variable_set_env DATABASE_HOST "$env_name" "$repo" ""
+      gh_variable_set_env DATABASE_ADMIN_USER "$env_name" "$repo" ""
+      gh_variable_set_env DATABASE_NETWORK_MODE "$env_name" "$repo" "public"
+      gh_variable_set_env DATABASE_SUBNET_IDS_CSV "$env_name" "$repo" ""
+      gh_variable_set_env DATABASE_LAMBDA_SECURITY_GROUP_ID "$env_name" "$repo" ""
+      gh_variable_set_env DATABASE_PORT "$env_name" "$repo" ""
+      gh_variable_set_env DATABASE_CREATE_APP_USER "$env_name" "$repo" "true"
+      gh_variable_set_env DATABASE_CREATE_SCHEMA "$env_name" "$repo" "true"
+      gh_variable_set_env DATABASE_USERNAME_PREFIX "$env_name" "$repo" ""
+      gh_variable_set_env DATABASE_APP_USERNAME "$env_name" "$repo" ""
     fi
     echo "Environment variables updated for '$env_name'."
   fi
 
-  if prompt_yes_no "Set environment secrets for '$env_name' now (Slack secrets, DATA_ENCRYPTION_KEY, DATABASE_PASSWORD)?" "n"; then
-    if [[ -z "${SLACK_SIGNING_SECRET:-}" ]]; then
-      SLACK_SIGNING_SECRET="$(required_from_env_or_prompt "SLACK_SIGNING_SECRET" "SlackSigningSecret" "secret")"
-    fi
-    if [[ -z "${SLACK_CLIENT_SECRET:-}" ]]; then
-      SLACK_CLIENT_SECRET="$(required_from_env_or_prompt "SLACK_CLIENT_SECRET" "SlackClientSecret" "secret")"
-    fi
-    gh secret set SLACK_SIGNING_SECRET --env "$env_name" --body "$SLACK_SIGNING_SECRET" -R "$repo"
-    gh secret set SLACK_CLIENT_SECRET --env "$env_name" --body "$SLACK_CLIENT_SECRET" -R "$repo"
-    gh secret set DATA_ENCRYPTION_KEY --env "$env_name" --body "$DATA_ENCRYPTION_KEY" -R "$repo"
-    gh secret set DATABASE_PASSWORD --env "$env_name" --body "$DATABASE_PASSWORD" -R "$repo"
-    [[ -n "${DATABASE_USER:-}" ]] && gh secret set DATABASE_USER --env "$env_name" --body "$DATABASE_USER" -R "$repo"
-    if [[ "$db_mode" == "2" && -n "$db_admin_password" ]]; then
-      gh secret set DATABASE_ADMIN_PASSWORD --env "$env_name" --body "$db_admin_password" -R "$repo"
-    fi
-    echo "Environment secrets updated for '$env_name'."
+  echo "Setting GitHub environment secrets for '$env_name' (Slack, DATA_ENCRYPTION_KEY, DATABASE_*)..."
+  if [[ -z "${SLACK_SIGNING_SECRET:-}" ]]; then
+    SLACK_SIGNING_SECRET="$(required_from_env_or_prompt "SLACK_SIGNING_SECRET" "SlackSigningSecret" "secret")"
   fi
+  if [[ -z "${SLACK_CLIENT_SECRET:-}" ]]; then
+    SLACK_CLIENT_SECRET="$(required_from_env_or_prompt "SLACK_CLIENT_SECRET" "SlackClientSecret" "secret")"
+  fi
+  gh secret set SLACK_SIGNING_SECRET --env "$env_name" --body "$SLACK_SIGNING_SECRET" -R "$repo"
+  gh secret set SLACK_CLIENT_SECRET --env "$env_name" --body "$SLACK_CLIENT_SECRET" -R "$repo"
+  gh secret set DATA_ENCRYPTION_KEY --env "$env_name" --body "$DATA_ENCRYPTION_KEY" -R "$repo"
+  gh secret set DATABASE_PASSWORD --env "$env_name" --body "$DATABASE_PASSWORD" -R "$repo"
+  [[ -n "${DATABASE_USER:-}" ]] && gh secret set DATABASE_USER --env "$env_name" --body "$DATABASE_USER" -R "$repo"
+  if [[ "$db_mode" == "2" && -n "$db_admin_password" ]]; then
+    gh secret set DATABASE_ADMIN_PASSWORD --env "$env_name" --body "$db_admin_password" -R "$repo"
+  fi
+  echo "Environment secrets updated for '$env_name'."
 }
 
 generate_stage_slack_manifest() {
@@ -1213,9 +1366,6 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
   DATABASE_PASSWORD="${DATABASE_PASSWORD:?DATABASE_PASSWORD required in env file}"
   DATABASE_USER="${DATABASE_USER:-}"
 
-  echo "=== SAM Build ==="
-  sam build -t "$APP_TEMPLATE" --use-container
-
   PARAMS=(
     "Stage=$STAGE"
     "DatabaseEngine=$DATABASE_ENGINE"
@@ -1225,45 +1375,43 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
     "DatabaseSchema=$DATABASE_SCHEMA"
     "DataEncryptionKey=$DATA_ENCRYPTION_KEY"
     "DatabasePassword=$DATABASE_PASSWORD"
+    "DatabaseUser=${DATABASE_USER:-}"
     "LogLevel=${LOG_LEVEL:-INFO}"
     "RequireAdmin=${REQUIRE_ADMIN:-true}"
     "SoftDeleteRetentionDays=${SOFT_DELETE_RETENTION_DAYS:-30}"
     "SyncbotFederationEnabled=${SYNCBOT_FEDERATION_ENABLED:-false}"
+    "SyncbotInstanceId=${SYNCBOT_INSTANCE_ID:-}"
+    "SyncbotPublicUrl=${SYNCBOT_PUBLIC_URL:-}"
+    "PrimaryWorkspace=${PRIMARY_WORKSPACE:-}"
+    "EnableDbReset=${ENABLE_DB_RESET:-}"
+    "DatabaseTlsEnabled=${DATABASE_TLS_ENABLED:-}"
+    "DatabaseSslCaPath=${DATABASE_SSL_CA_PATH:-}"
+    "EnableXRay=${ENABLE_XRAY:-false}"
+    "ExistingDatabaseHost=${DATABASE_HOST:-}"
+    "ExistingDatabaseAdminUser=${DATABASE_ADMIN_USER:-}"
+    "ExistingDatabaseAdminPassword=${DATABASE_ADMIN_PASSWORD:-}"
+    "ExistingDatabaseNetworkMode=${DATABASE_NETWORK_MODE:-public}"
+    "ExistingDatabaseSubnetIdsCsv=${DATABASE_SUBNET_IDS_CSV:-}"
+    "ExistingDatabaseLambdaSecurityGroupId=${DATABASE_LAMBDA_SECURITY_GROUP_ID:-}"
+    "ExistingDatabasePort=${DATABASE_PORT:-}"
+    "ExistingDatabaseCreateAppUser=${DATABASE_CREATE_APP_USER:-true}"
+    "ExistingDatabaseCreateSchema=${DATABASE_CREATE_SCHEMA:-true}"
+    "ExistingDatabaseUsernamePrefix=${DATABASE_USERNAME_PREFIX:-}"
+    "ExistingDatabaseAppUsername=${DATABASE_APP_USERNAME:-}"
+    "DatabaseAdminPassword=${DATABASE_ADMIN_PASSWORD:-}"
+    "SlackOauthBotScopes=${SLACK_BOT_SCOPES:-app_mentions:read,channels:history,channels:join,channels:read,channels:manage,chat:write,chat:write.customize,files:read,files:write,groups:history,groups:read,groups:write,im:write,reactions:read,reactions:write,team:read,users:read,users:read.email}"
+    "SlackOauthUserScopes=${SLACK_USER_SCOPES:-chat:write,channels:history,channels:read,files:read,files:write,groups:history,groups:read,groups:write,im:write,reactions:read,reactions:write,team:read,users:read,users:read.email}"
+    "DatabaseInstanceClass=${DATABASE_INSTANCE_CLASS:-db.t4g.micro}"
+    "DatabaseBackupRetentionDays=${DATABASE_BACKUP_RETENTION_DAYS:-0}"
+    "AllowedDBCidr=${ALLOWED_DB_CIDR:-0.0.0.0/0}"
+    "VpcCidr=${VPC_CIDR:-10.0.0.0/16}"
   )
-  [[ -n "$DATABASE_USER" ]] && PARAMS+=("DatabaseUser=$DATABASE_USER")
-  [[ -n "${SYNCBOT_INSTANCE_ID:-}" ]] && PARAMS+=("SyncbotInstanceId=$SYNCBOT_INSTANCE_ID")
-  [[ -n "${SYNCBOT_PUBLIC_URL:-}" ]] && PARAMS+=("SyncbotPublicUrl=$SYNCBOT_PUBLIC_URL")
-  [[ -n "${PRIMARY_WORKSPACE:-}" ]] && PARAMS+=("PrimaryWorkspace=$PRIMARY_WORKSPACE")
-  [[ "${ENABLE_DB_RESET:-}" == "true" ]] && PARAMS+=("EnableDbReset=true")
-  [[ -n "${DATABASE_TLS_ENABLED:-}" ]] && PARAMS+=("DatabaseTlsEnabled=$DATABASE_TLS_ENABLED")
-  [[ -n "${DATABASE_SSL_CA_PATH:-}" ]] && PARAMS+=("DatabaseSslCaPath=$DATABASE_SSL_CA_PATH")
-  [[ "${ENABLE_XRAY:-}" == "true" ]] && PARAMS+=("EnableXRay=true")
 
-  if [[ -n "$DATABASE_HOST" ]]; then
-    PARAMS+=("ExistingDatabaseHost=$DATABASE_HOST")
-    [[ -n "${DATABASE_ADMIN_USER:-}" ]] && PARAMS+=("ExistingDatabaseAdminUser=$DATABASE_ADMIN_USER")
-    [[ -n "${DATABASE_ADMIN_PASSWORD:-}" ]] && PARAMS+=("ExistingDatabaseAdminPassword=$DATABASE_ADMIN_PASSWORD")
-    PARAMS+=("ExistingDatabaseNetworkMode=${DATABASE_NETWORK_MODE:-public}")
-    [[ -n "${DATABASE_SUBNET_IDS_CSV:-}" ]] && PARAMS+=("ExistingDatabaseSubnetIdsCsv=$DATABASE_SUBNET_IDS_CSV")
-    [[ -n "${DATABASE_LAMBDA_SECURITY_GROUP_ID:-}" ]] && PARAMS+=("ExistingDatabaseLambdaSecurityGroupId=$DATABASE_LAMBDA_SECURITY_GROUP_ID")
-    [[ -n "${DATABASE_PORT:-}" ]] && PARAMS+=("ExistingDatabasePort=$DATABASE_PORT")
-    PARAMS+=("ExistingDatabaseCreateAppUser=${DATABASE_CREATE_APP_USER:-true}")
-    PARAMS+=("ExistingDatabaseCreateSchema=${DATABASE_CREATE_SCHEMA:-true}")
-    [[ -n "${DATABASE_USERNAME_PREFIX:-}" ]] && PARAMS+=("ExistingDatabaseUsernamePrefix=$DATABASE_USERNAME_PREFIX")
-    [[ -n "${DATABASE_APP_USERNAME:-}" ]] && PARAMS+=("ExistingDatabaseAppUsername=$DATABASE_APP_USERNAME")
-  else
-    [[ -n "$DATABASE_ADMIN_PASSWORD" ]] && PARAMS+=("DatabaseAdminPassword=$DATABASE_ADMIN_PASSWORD")
-  fi
+  echo "=== SAM Build ==="
+  sam build -t "$APP_TEMPLATE" --use-container
 
   echo "=== SAM Deploy ==="
-  sam deploy \
-    -t .aws-sam/build/template.yaml \
-    --stack-name "$STACK_NAME" \
-    --s3-bucket "$S3_BUCKET" \
-    --capabilities CAPABILITY_IAM \
-    --region "$REGION" \
-    --no-fail-on-empty-changeset \
-    --parameter-overrides "${PARAMS[@]}"
+  sam_deploy_or_fallback
 
   APP_OUTPUTS="$(app_describe_outputs "$STACK_NAME" "$REGION")"
   FUNCTION_ARN="$(output_value "$APP_OUTPUTS" "SyncBotFunctionArn")"
@@ -1301,39 +1449,40 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
     [[ -n "$ROLE_ARN" ]] && gh variable set AWS_ROLE_TO_ASSUME --body "$ROLE_ARN" -R "$REPO"
     [[ -n "$S3_BUCKET" ]] && gh variable set AWS_S3_BUCKET --body "$S3_BUCKET" -R "$REPO"
     gh variable set AWS_REGION --body "$REGION" -R "$REPO"
-    gh variable set AWS_STACK_NAME --env "$ENV_NAME" --body "$STACK_NAME" -R "$REPO"
-    gh variable set STAGE_NAME --env "$ENV_NAME" --body "$STAGE" -R "$REPO"
-    gh variable set DATABASE_SCHEMA --env "$ENV_NAME" --body "$DATABASE_SCHEMA" -R "$REPO"
-    gh variable set DATABASE_ENGINE --env "$ENV_NAME" --body "$DATABASE_ENGINE" -R "$REPO"
-    gh variable set SLACK_CLIENT_ID --env "$ENV_NAME" --body "$SLACK_CLIENT_ID" -R "$REPO"
+    gh_variable_set_env AWS_STACK_NAME "$ENV_NAME" "$REPO" "$STACK_NAME"
+    gh_variable_set_env STAGE_NAME "$ENV_NAME" "$REPO" "$STAGE"
+    gh_variable_set_env DATABASE_SCHEMA "$ENV_NAME" "$REPO" "$DATABASE_SCHEMA"
+    gh_variable_set_env DATABASE_ENGINE "$ENV_NAME" "$REPO" "$DATABASE_ENGINE"
+    gh_variable_set_env SLACK_CLIENT_ID "$ENV_NAME" "$REPO" "$SLACK_CLIENT_ID"
     if [[ -n "$DATABASE_HOST" ]]; then
-      gh variable set DATABASE_HOST --env "$ENV_NAME" --body "$DATABASE_HOST" -R "$REPO"
-      gh variable set DATABASE_ADMIN_USER --env "$ENV_NAME" --body "${DATABASE_ADMIN_USER:-}" -R "$REPO"
-      gh variable set DATABASE_NETWORK_MODE --env "$ENV_NAME" --body "${DATABASE_NETWORK_MODE:-public}" -R "$REPO"
+      gh_variable_set_env DATABASE_HOST "$ENV_NAME" "$REPO" "$DATABASE_HOST"
+      gh_variable_set_env DATABASE_ADMIN_USER "$ENV_NAME" "$REPO" "${DATABASE_ADMIN_USER:-}"
+      gh_variable_set_env DATABASE_NETWORK_MODE "$ENV_NAME" "$REPO" "${DATABASE_NETWORK_MODE:-public}"
       if [[ "${DATABASE_NETWORK_MODE:-public}" == "private" ]]; then
-        gh variable set DATABASE_SUBNET_IDS_CSV --env "$ENV_NAME" --body "${DATABASE_SUBNET_IDS_CSV:-}" -R "$REPO"
-        gh variable set DATABASE_LAMBDA_SECURITY_GROUP_ID --env "$ENV_NAME" --body "${DATABASE_LAMBDA_SECURITY_GROUP_ID:-}" -R "$REPO"
+        gh_variable_set_env DATABASE_SUBNET_IDS_CSV "$ENV_NAME" "$REPO" "${DATABASE_SUBNET_IDS_CSV:-}"
+        gh_variable_set_env DATABASE_LAMBDA_SECURITY_GROUP_ID "$ENV_NAME" "$REPO" "${DATABASE_LAMBDA_SECURITY_GROUP_ID:-}"
       else
-        gh variable set DATABASE_SUBNET_IDS_CSV --env "$ENV_NAME" --body "" -R "$REPO"
-        gh variable set DATABASE_LAMBDA_SECURITY_GROUP_ID --env "$ENV_NAME" --body "" -R "$REPO"
+        gh_variable_set_env DATABASE_SUBNET_IDS_CSV "$ENV_NAME" "$REPO" ""
+        gh_variable_set_env DATABASE_LAMBDA_SECURITY_GROUP_ID "$ENV_NAME" "$REPO" ""
       fi
-      gh variable set DATABASE_PORT --env "$ENV_NAME" --body "${DATABASE_PORT:-}" -R "$REPO"
-      gh variable set DATABASE_CREATE_APP_USER --env "$ENV_NAME" --body "${DATABASE_CREATE_APP_USER:-true}" -R "$REPO"
-      gh variable set DATABASE_CREATE_SCHEMA --env "$ENV_NAME" --body "${DATABASE_CREATE_SCHEMA:-true}" -R "$REPO"
-      gh variable set DATABASE_USERNAME_PREFIX --env "$ENV_NAME" --body "${DATABASE_USERNAME_PREFIX:-}" -R "$REPO"
-      gh variable set DATABASE_APP_USERNAME --env "$ENV_NAME" --body "${DATABASE_APP_USERNAME:-}" -R "$REPO"
+      gh_variable_set_env DATABASE_PORT "$ENV_NAME" "$REPO" "${DATABASE_PORT:-}"
+      gh_variable_set_env DATABASE_CREATE_APP_USER "$ENV_NAME" "$REPO" "${DATABASE_CREATE_APP_USER:-true}"
+      gh_variable_set_env DATABASE_CREATE_SCHEMA "$ENV_NAME" "$REPO" "${DATABASE_CREATE_SCHEMA:-true}"
+      gh_variable_set_env DATABASE_USERNAME_PREFIX "$ENV_NAME" "$REPO" "${DATABASE_USERNAME_PREFIX:-}"
+      gh_variable_set_env DATABASE_APP_USERNAME "$ENV_NAME" "$REPO" "${DATABASE_APP_USERNAME:-}"
     else
-      gh variable set DATABASE_HOST --env "$ENV_NAME" --body "" -R "$REPO"
-      gh variable set DATABASE_ADMIN_USER --env "$ENV_NAME" --body "" -R "$REPO"
-      gh variable set DATABASE_NETWORK_MODE --env "$ENV_NAME" --body "public" -R "$REPO"
-      gh variable set DATABASE_SUBNET_IDS_CSV --env "$ENV_NAME" --body "" -R "$REPO"
-      gh variable set DATABASE_LAMBDA_SECURITY_GROUP_ID --env "$ENV_NAME" --body "" -R "$REPO"
-      gh variable set DATABASE_PORT --env "$ENV_NAME" --body "" -R "$REPO"
-      gh variable set DATABASE_CREATE_APP_USER --env "$ENV_NAME" --body "true" -R "$REPO"
-      gh variable set DATABASE_CREATE_SCHEMA --env "$ENV_NAME" --body "true" -R "$REPO"
-      gh variable set DATABASE_USERNAME_PREFIX --env "$ENV_NAME" --body "" -R "$REPO"
-      gh variable set DATABASE_APP_USERNAME --env "$ENV_NAME" --body "" -R "$REPO"
+      gh_variable_set_env DATABASE_HOST "$ENV_NAME" "$REPO" ""
+      gh_variable_set_env DATABASE_ADMIN_USER "$ENV_NAME" "$REPO" ""
+      gh_variable_set_env DATABASE_NETWORK_MODE "$ENV_NAME" "$REPO" "public"
+      gh_variable_set_env DATABASE_SUBNET_IDS_CSV "$ENV_NAME" "$REPO" ""
+      gh_variable_set_env DATABASE_LAMBDA_SECURITY_GROUP_ID "$ENV_NAME" "$REPO" ""
+      gh_variable_set_env DATABASE_PORT "$ENV_NAME" "$REPO" ""
+      gh_variable_set_env DATABASE_CREATE_APP_USER "$ENV_NAME" "$REPO" "true"
+      gh_variable_set_env DATABASE_CREATE_SCHEMA "$ENV_NAME" "$REPO" "true"
+      gh_variable_set_env DATABASE_USERNAME_PREFIX "$ENV_NAME" "$REPO" ""
+      gh_variable_set_env DATABASE_APP_USERNAME "$ENV_NAME" "$REPO" ""
     fi
+    echo "Setting GitHub environment secrets for '$ENV_NAME'..."
     gh secret set SLACK_SIGNING_SECRET --env "$ENV_NAME" --body "$SLACK_SIGNING_SECRET" -R "$REPO"
     gh secret set SLACK_CLIENT_SECRET --env "$ENV_NAME" --body "$SLACK_CLIENT_SECRET" -R "$REPO"
     gh secret set DATA_ENCRYPTION_KEY --env "$ENV_NAME" --body "$DATA_ENCRYPTION_KEY" -R "$REPO"
@@ -1948,9 +2097,6 @@ echo "=== Preflight ==="
 handle_unhealthy_stack_state "$STACK_NAME" "$REGION"
 
 echo
-echo "=== SAM Build ==="
-echo "Building app..."
-sam build -t "$APP_TEMPLATE" --use-container
 
 PARAMS=(
   "Stage=$STAGE"
@@ -2000,30 +2146,36 @@ if [[ "$DB_MODE" == "2" ]]; then
 else
   PARAMS+=("DatabaseAdminPassword=${DATABASE_ADMIN_PASSWORD:-}")
   PARAMS+=(
-    "ParameterKey=ExistingDatabaseHost,ParameterValue="
-    "ParameterKey=ExistingDatabaseAdminUser,ParameterValue="
-    "ParameterKey=ExistingDatabaseAdminPassword,ParameterValue="
+    "ExistingDatabaseHost="
+    "ExistingDatabaseAdminUser="
+    "ExistingDatabaseAdminPassword="
     "ExistingDatabaseNetworkMode=public"
-    "ParameterKey=ExistingDatabaseSubnetIdsCsv,ParameterValue="
-    "ParameterKey=ExistingDatabaseLambdaSecurityGroupId,ParameterValue="
-    "ParameterKey=ExistingDatabasePort,ParameterValue="
+    "ExistingDatabaseSubnetIdsCsv="
+    "ExistingDatabaseLambdaSecurityGroupId="
+    "ExistingDatabasePort="
     "ExistingDatabaseCreateAppUser=true"
     "ExistingDatabaseCreateSchema=true"
-    "ParameterKey=ExistingDatabaseUsernamePrefix,ParameterValue="
-    "ParameterKey=ExistingDatabaseAppUsername,ParameterValue="
+    "ExistingDatabaseUsernamePrefix="
+    "ExistingDatabaseAppUsername="
   )
 fi
 
+PARAMS+=(
+  "SlackOauthBotScopes=${SLACK_BOT_SCOPES:-app_mentions:read,channels:history,channels:join,channels:read,channels:manage,chat:write,chat:write.customize,files:read,files:write,groups:history,groups:read,groups:write,im:write,reactions:read,reactions:write,team:read,users:read,users:read.email}"
+  "SlackOauthUserScopes=${SLACK_USER_SCOPES:-chat:write,channels:history,channels:read,files:read,files:write,groups:history,groups:read,groups:write,im:write,reactions:read,reactions:write,team:read,users:read,users:read.email}"
+  "DatabaseInstanceClass=${DATABASE_INSTANCE_CLASS:-db.t4g.micro}"
+  "DatabaseBackupRetentionDays=${DATABASE_BACKUP_RETENTION_DAYS:-0}"
+  "AllowedDBCidr=${ALLOWED_DB_CIDR:-0.0.0.0/0}"
+  "VpcCidr=${VPC_CIDR:-10.0.0.0/16}"
+)
+
+echo "=== SAM Build ==="
+echo "Building app..."
+sam build -t "$APP_TEMPLATE" --use-container
+
 echo "=== SAM Deploy ==="
 echo "Deploying stack..."
-sam deploy \
-  -t .aws-sam/build/template.yaml \
-  --stack-name "$STACK_NAME" \
-  --s3-bucket "$S3_BUCKET" \
-  --capabilities CAPABILITY_IAM \
-  --region "$REGION" \
-  --no-fail-on-empty-changeset \
-  --parameter-overrides "${PARAMS[@]}"
+sam_deploy_or_fallback
 
 APP_OUTPUTS="$(app_describe_outputs "$STACK_NAME" "$REGION")"
 
@@ -2174,15 +2326,40 @@ if [[ "${SETUP_GITHUB:-}" == "true" && "$TASK_CICD" != "true" ]]; then
   [[ -n "$ROLE_ARN" ]] && gh variable set AWS_ROLE_TO_ASSUME --body "$ROLE_ARN" -R "$REPO"
   [[ -n "$S3_BUCKET" ]] && gh variable set AWS_S3_BUCKET --body "$S3_BUCKET" -R "$REPO"
   gh variable set AWS_REGION --body "$REGION" -R "$REPO"
-  gh variable set AWS_STACK_NAME --env "$ENV_NAME" --body "$STACK_NAME" -R "$REPO"
-  gh variable set STAGE_NAME --env "$ENV_NAME" --body "$STAGE" -R "$REPO"
-  gh variable set DATABASE_SCHEMA --env "$ENV_NAME" --body "$DATABASE_SCHEMA" -R "$REPO"
-  gh variable set DATABASE_ENGINE --env "$ENV_NAME" --body "$DATABASE_ENGINE" -R "$REPO"
-  gh variable set SLACK_CLIENT_ID --env "$ENV_NAME" --body "$SLACK_CLIENT_ID" -R "$REPO"
+  gh_variable_set_env AWS_STACK_NAME "$ENV_NAME" "$REPO" "$STACK_NAME"
+  gh_variable_set_env STAGE_NAME "$ENV_NAME" "$REPO" "$STAGE"
+  gh_variable_set_env DATABASE_SCHEMA "$ENV_NAME" "$REPO" "$DATABASE_SCHEMA"
+  gh_variable_set_env DATABASE_ENGINE "$ENV_NAME" "$REPO" "$DATABASE_ENGINE"
+  gh_variable_set_env SLACK_CLIENT_ID "$ENV_NAME" "$REPO" "$SLACK_CLIENT_ID"
   if [[ -n "$DATABASE_HOST" ]]; then
-    gh variable set DATABASE_HOST --env "$ENV_NAME" --body "$DATABASE_HOST" -R "$REPO"
-    [[ -n "${DATABASE_PORT:-${DATABASE_PORT:-}}" ]] && gh variable set DATABASE_PORT --env "$ENV_NAME" --body "${DATABASE_PORT:-${DATABASE_PORT:-}}" -R "$REPO"
+    gh_variable_set_env DATABASE_HOST "$ENV_NAME" "$REPO" "$DATABASE_HOST"
+    gh_variable_set_env DATABASE_ADMIN_USER "$ENV_NAME" "$REPO" "${DATABASE_ADMIN_USER:-}"
+    gh_variable_set_env DATABASE_NETWORK_MODE "$ENV_NAME" "$REPO" "${DATABASE_NETWORK_MODE:-public}"
+    if [[ "${DATABASE_NETWORK_MODE:-public}" == "private" ]]; then
+      gh_variable_set_env DATABASE_SUBNET_IDS_CSV "$ENV_NAME" "$REPO" "${DATABASE_SUBNET_IDS_CSV:-}"
+      gh_variable_set_env DATABASE_LAMBDA_SECURITY_GROUP_ID "$ENV_NAME" "$REPO" "${DATABASE_LAMBDA_SECURITY_GROUP_ID:-}"
+    else
+      gh_variable_set_env DATABASE_SUBNET_IDS_CSV "$ENV_NAME" "$REPO" ""
+      gh_variable_set_env DATABASE_LAMBDA_SECURITY_GROUP_ID "$ENV_NAME" "$REPO" ""
+    fi
+    gh_variable_set_env DATABASE_PORT "$ENV_NAME" "$REPO" "${DATABASE_PORT:-}"
+    gh_variable_set_env DATABASE_CREATE_APP_USER "$ENV_NAME" "$REPO" "${DATABASE_CREATE_APP_USER:-true}"
+    gh_variable_set_env DATABASE_CREATE_SCHEMA "$ENV_NAME" "$REPO" "${DATABASE_CREATE_SCHEMA:-true}"
+    gh_variable_set_env DATABASE_USERNAME_PREFIX "$ENV_NAME" "$REPO" "${DATABASE_USERNAME_PREFIX:-}"
+    gh_variable_set_env DATABASE_APP_USERNAME "$ENV_NAME" "$REPO" "${DATABASE_APP_USERNAME:-}"
+  else
+    gh_variable_set_env DATABASE_HOST "$ENV_NAME" "$REPO" ""
+    gh_variable_set_env DATABASE_ADMIN_USER "$ENV_NAME" "$REPO" ""
+    gh_variable_set_env DATABASE_NETWORK_MODE "$ENV_NAME" "$REPO" "public"
+    gh_variable_set_env DATABASE_SUBNET_IDS_CSV "$ENV_NAME" "$REPO" ""
+    gh_variable_set_env DATABASE_LAMBDA_SECURITY_GROUP_ID "$ENV_NAME" "$REPO" ""
+    gh_variable_set_env DATABASE_PORT "$ENV_NAME" "$REPO" ""
+    gh_variable_set_env DATABASE_CREATE_APP_USER "$ENV_NAME" "$REPO" "true"
+    gh_variable_set_env DATABASE_CREATE_SCHEMA "$ENV_NAME" "$REPO" "true"
+    gh_variable_set_env DATABASE_USERNAME_PREFIX "$ENV_NAME" "$REPO" ""
+    gh_variable_set_env DATABASE_APP_USERNAME "$ENV_NAME" "$REPO" ""
   fi
+  echo "Setting GitHub environment secrets for '$ENV_NAME'..."
   gh secret set SLACK_SIGNING_SECRET --env "$ENV_NAME" --body "$SLACK_SIGNING_SECRET" -R "$REPO"
   gh secret set SLACK_CLIENT_SECRET --env "$ENV_NAME" --body "$SLACK_CLIENT_SECRET" -R "$REPO"
   gh secret set DATA_ENCRYPTION_KEY --env "$ENV_NAME" --body "$DATA_ENCRYPTION_KEY" -R "$REPO"

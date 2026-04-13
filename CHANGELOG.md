@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `.env.deploy.example` for cloud deployments (separate from `.env.example`)
 - CI: bootstrap sync, `workflow_dispatch`, concurrency groups, `pip-audit`, `GITHUB_STEP_SUMMARY`
 - CloudWatch Logs 30-day retention; X-Ray tracing now optional
+- `--verbose` deploy receipts with full config, secrets, Slack URLs, and SAM/Terraform parameters
+- AWS: `--update-stack` skips `sam deploy` and uses direct CloudFormation `update-stack`; local and CI deploys **auto-fallback** to `update-stack` when `sam deploy` fails with `EarlyValidation::ResourceExistenceCheck` (generic migration path, not API-Gateway-specific)
 
 ### Changed
 

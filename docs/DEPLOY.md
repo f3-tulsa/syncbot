@@ -29,6 +29,8 @@ The launcher discovers `infra/<provider>/scripts/deploy.sh`, shows a numbered me
 
 **Verbose output:** Add `--verbose` for extended deploy receipts (SAM/Terraform parameters, inline Slack manifest) and extra screen output during deploy — useful for debugging deploy issues: `./deploy.sh --env test --verbose aws`.
 
+**Force `update-stack` (AWS):** Set `UPDATE_STACK=true` in `.env.deploy.<stage>` or pass **`--update-stack`** on `./deploy.sh` to skip `sam deploy` and use direct CloudFormation `update-stack` (optional; the AWS script normally auto-retries after an `EarlyValidation::ResourceExistenceCheck` changeset failure).
+
 **Secret auto-generation:** If `DATA_ENCRYPTION_KEY` is empty, a secure key is generated automatically and saved back to the `.env.deploy` file. Similarly, when using `DbSetup` (admin credentials provided), `DATABASE_PASSWORD` and `DATABASE_USER` are auto-generated if empty.
 
 **Interactive save:** After a successful interactive deploy, the script prompts to save all config to `.env.deploy.<stage>` for future non-interactive runs.
@@ -363,10 +365,25 @@ Save to your `.env.deploy.<stage>` file. After deploying with the new version, y
 
 ### API Gateway removal (AWS)
 
-API Gateway has been replaced by Lambda Function URLs. After deploying:
+API Gateway has been replaced by Lambda Function URLs.
 
-1. Update your Slack app's **Request URL** and **Redirect URLs** to use the new Lambda Function URL (shown in deploy output as `SyncBotApiUrl` / `SyncBotInstallUrl`).
-2. The old API Gateway is removed automatically by CloudFormation on deploy.
+**New installs:** No special action needed — `template.yaml` works directly.
+
+**Existing stacks upgrading from v1.0.x:** CloudFormation can reject **changesets** with `AWS::EarlyValidation::ResourceExistenceCheck` when a single update removes one kind of resource (for example API Gateway) and adds another (for example a Lambda Function URL). **`sam deploy` always creates a changeset**, so that path can fail.
+
+**Automatic retry:** The AWS deploy script ([infra/aws/scripts/deploy.sh](infra/aws/scripts/deploy.sh)) and GitHub Actions ([infra/aws/scripts/ci_sam_deploy_with_fallback.sh](infra/aws/scripts/ci_sam_deploy_with_fallback.sh)) try `sam deploy` first; if the failure output contains `EarlyValidation::ResourceExistenceCheck`, they **retry using `aws cloudformation update-stack`** (no changeset), which bypasses that validation. No flags are required for most migrations.
+
+**Optional:** Pass **`--update-stack`** to `./deploy.sh` to skip the initial `sam deploy` and go straight to `update-stack` when you already know the changeset will fail (saves one failed attempt).
+
+```bash
+./deploy.sh --env test aws
+# or, to force update-stack only:
+./deploy.sh --env test --update-stack aws
+```
+
+**Manual alternative:** From a SAM build output, run `sam package` (upload artifacts to your deploy bucket), upload the packaged template to S3, then `aws cloudformation update-stack --template-url ... --capabilities CAPABILITY_IAM CAPABILITY_AUTO_EXPAND` with the same parameters as your stack, and `aws cloudformation wait stack-update-complete`.
+
+**After migration:** Update your Slack app's **Request URL** and **Redirect URLs** to use the new Lambda Function URL (shown in deploy output as `SyncBotApiUrl` / `SyncBotInstallUrl`). The generated `slack-manifest_<stage>.json` already contains the correct URLs.
 
 ### New `.env.deploy` workflow
 

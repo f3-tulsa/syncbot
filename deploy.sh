@@ -609,7 +609,8 @@ fi
 
 usage() {
   cat <<EOF
-Usage: ./deploy.sh [--env <stage>] [--bootstrap] [--setup-github] [--verbose] [selection]
+Usage: ./deploy.sh [--env <stage>] [--bootstrap] [--setup-github] [--verbose]
+                   [--update-stack] [selection]
 
 Options:
   --env <stage>     Source .env.deploy.<stage> and run a non-interactive deploy
@@ -620,6 +621,11 @@ Options:
                     Works with --env (non-interactive) or interactive deploys.
   --verbose         Extended deploy receipts (SAM/Terraform parameters, inline
                     Slack manifest) and extra screen output for debugging.
+  --update-stack    AWS only. Skip sam deploy and use aws cloudformation
+                    update-stack directly (no changeset; bypasses early
+                    validation). Normally unnecessary: the AWS deploy script
+                    auto-retries with update-stack when CloudFormation rejects
+                    a changeset with EarlyValidation::ResourceExistenceCheck.
 
 No args:
   Scan infra/*/scripts/deploy.sh, show a numbered menu, and run your choice.
@@ -637,6 +643,7 @@ Examples:
   ./deploy.sh --env prod --setup-github aws
   ./deploy.sh --setup-github aws                 # interactive deploy + GitHub push
   ./deploy.sh --env test --verbose aws           # verbose receipt + screen output
+  ./deploy.sh --env test --update-stack aws      # force direct update-stack (optional)
 EOF
 }
 
@@ -704,7 +711,7 @@ resolve_script_from_selection() {
 }
 
 main() {
-  local env_name="" setup_github="false" bootstrap="false" verbose="false" selection=""
+  local env_name="" setup_github="false" bootstrap="false" verbose="false" update_stack="false" selection=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -727,6 +734,10 @@ main() {
         ;;
       --verbose)
         verbose="true"
+        shift
+        ;;
+      --update-stack)
+        update_stack="true"
         shift
         ;;
       *)
@@ -760,6 +771,13 @@ main() {
       echo "=== Resolving Secret Manager References ==="
       resolve_sm_id_vars
     fi
+  fi
+
+  # UPDATE_STACK: CLI --update-stack wins; else keep value from .env.deploy.* if set.
+  if [[ "$update_stack" == "true" ]]; then
+    export UPDATE_STACK=true
+  else
+    export UPDATE_STACK="${UPDATE_STACK:-false}"
   fi
 
   if [[ -z "$selection" && -n "${CLOUD_PROVIDER:-}" ]]; then

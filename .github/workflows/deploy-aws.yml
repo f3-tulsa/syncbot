@@ -68,6 +68,8 @@ jobs:
     environment: test
     needs: sam-build
     steps:
+      - uses: actions/checkout@v6
+
       - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
@@ -116,47 +118,40 @@ jobs:
             --no-fail-on-empty-changeset
 
       - name: Deploy to test
-        run: |
-          sam deploy \
-            -t .aws-sam/build/template.yaml \
-            --no-confirm-changeset \
-            --no-fail-on-empty-changeset \
-            --stack-name ${{ vars.AWS_STACK_NAME }} \
-            --s3-bucket ${{ vars.AWS_S3_BUCKET }} \
-            --capabilities CAPABILITY_IAM \
-            --region ${{ vars.AWS_REGION }} \
-            --no-disable-rollback \
-            --force-upload \
-            --parameter-overrides \
-              "Stage=${{ vars.STAGE_NAME }} \
-               DatabaseEngine=${{ vars.DATABASE_ENGINE || 'mysql' }} \
-               DataEncryptionKey=${{ secrets.DATA_ENCRYPTION_KEY }} \
-               DatabasePassword=${{ secrets.DATABASE_PASSWORD }} \
-               DatabaseUser=${{ secrets.DATABASE_USER }} \
-               ExistingDatabaseHost=${{ vars.DATABASE_HOST }} \
-               ExistingDatabaseAdminUser=${{ vars.DATABASE_ADMIN_USER }} \
-               ExistingDatabaseAdminPassword=${{ secrets.DATABASE_ADMIN_PASSWORD }} \
-               ExistingDatabaseNetworkMode=${{ vars.DATABASE_NETWORK_MODE || 'public' }} \
-               ExistingDatabaseSubnetIdsCsv=${{ vars.DATABASE_SUBNET_IDS_CSV }} \
-               ExistingDatabaseLambdaSecurityGroupId=${{ vars.DATABASE_LAMBDA_SECURITY_GROUP_ID }} \
-               ExistingDatabasePort=${{ vars.DATABASE_PORT }} \
-               ExistingDatabaseCreateAppUser=${{ vars.DATABASE_CREATE_APP_USER || 'true' }} \
-               ExistingDatabaseCreateSchema=${{ vars.DATABASE_CREATE_SCHEMA || 'true' }} \
-               ExistingDatabaseUsernamePrefix=${{ vars.DATABASE_USERNAME_PREFIX }} \
-               ExistingDatabaseAppUsername=${{ vars.DATABASE_APP_USERNAME }} \
-               DatabaseSchema=${{ vars.DATABASE_SCHEMA }} \
-               LogLevel=${{ vars.LOG_LEVEL || 'INFO' }} \
-               RequireAdmin=${{ vars.REQUIRE_ADMIN || 'true' }} \
-               SoftDeleteRetentionDays=${{ vars.SOFT_DELETE_RETENTION_DAYS || '30' }} \
-               SyncbotFederationEnabled=${{ vars.SYNCBOT_FEDERATION_ENABLED || 'false' }} \
-               SyncbotInstanceId=${{ vars.SYNCBOT_INSTANCE_ID }} \
-               SyncbotPublicUrl=${{ vars.SYNCBOT_PUBLIC_URL }} \
-               PrimaryWorkspace=${{ vars.PRIMARY_WORKSPACE }} \
-               EnableDbReset=${{ vars.ENABLE_DB_RESET }} \
-               EnableXRay=${{ vars.ENABLE_XRAY || 'false' }} \
-               SlackClientID=${{ vars.SLACK_CLIENT_ID }} \
-               SlackClientSecret=${{ secrets.SLACK_CLIENT_SECRET }} \
-               SlackSigningSecret=${{ secrets.SLACK_SIGNING_SECRET }}"
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_S3_BUCKET: ${{ vars.AWS_S3_BUCKET }}
+          AWS_STACK_NAME: ${{ vars.AWS_STACK_NAME }}
+          STAGE_NAME: ${{ vars.STAGE_NAME }}
+          DATABASE_ENGINE: ${{ vars.DATABASE_ENGINE || 'mysql' }}
+          DATA_ENCRYPTION_KEY: ${{ secrets.DATA_ENCRYPTION_KEY }}
+          DATABASE_PASSWORD: ${{ secrets.DATABASE_PASSWORD }}
+          DATABASE_USER: ${{ secrets.DATABASE_USER }}
+          DATABASE_HOST: ${{ vars.DATABASE_HOST }}
+          DATABASE_ADMIN_USER: ${{ vars.DATABASE_ADMIN_USER }}
+          DATABASE_ADMIN_PASSWORD: ${{ secrets.DATABASE_ADMIN_PASSWORD }}
+          DATABASE_NETWORK_MODE: ${{ vars.DATABASE_NETWORK_MODE || 'public' }}
+          DATABASE_SUBNET_IDS_CSV: ${{ vars.DATABASE_SUBNET_IDS_CSV }}
+          DATABASE_LAMBDA_SECURITY_GROUP_ID: ${{ vars.DATABASE_LAMBDA_SECURITY_GROUP_ID }}
+          DATABASE_PORT: ${{ vars.DATABASE_PORT }}
+          DATABASE_CREATE_APP_USER: ${{ vars.DATABASE_CREATE_APP_USER || 'true' }}
+          DATABASE_CREATE_SCHEMA: ${{ vars.DATABASE_CREATE_SCHEMA || 'true' }}
+          DATABASE_USERNAME_PREFIX: ${{ vars.DATABASE_USERNAME_PREFIX }}
+          DATABASE_APP_USERNAME: ${{ vars.DATABASE_APP_USERNAME }}
+          DATABASE_SCHEMA: ${{ vars.DATABASE_SCHEMA }}
+          LOG_LEVEL: ${{ vars.LOG_LEVEL || 'INFO' }}
+          REQUIRE_ADMIN: ${{ vars.REQUIRE_ADMIN || 'true' }}
+          SOFT_DELETE_RETENTION_DAYS: ${{ vars.SOFT_DELETE_RETENTION_DAYS || '30' }}
+          SYNCBOT_FEDERATION_ENABLED: ${{ vars.SYNCBOT_FEDERATION_ENABLED || 'false' }}
+          SYNCBOT_INSTANCE_ID: ${{ vars.SYNCBOT_INSTANCE_ID }}
+          SYNCBOT_PUBLIC_URL: ${{ vars.SYNCBOT_PUBLIC_URL }}
+          PRIMARY_WORKSPACE: ${{ vars.PRIMARY_WORKSPACE }}
+          ENABLE_DB_RESET: ${{ vars.ENABLE_DB_RESET }}
+          ENABLE_XRAY: ${{ vars.ENABLE_XRAY || 'false' }}
+          SLACK_CLIENT_ID: ${{ vars.SLACK_CLIENT_ID }}
+          SLACK_CLIENT_SECRET: ${{ secrets.SLACK_CLIENT_SECRET }}
+          SLACK_SIGNING_SECRET: ${{ secrets.SLACK_SIGNING_SECRET }}
+        run: bash infra/aws/scripts/ci_sam_deploy_with_fallback.sh
 
       - name: Run migrations and warm up Lambda
         run: |
@@ -191,6 +186,8 @@ jobs:
     environment: prod
     needs: sam-build
     steps:
+      - uses: actions/checkout@v6
+
       - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
@@ -239,47 +236,40 @@ jobs:
             --no-fail-on-empty-changeset
 
       - name: Deploy to prod
-        run: |
-          sam deploy \
-            -t .aws-sam/build/template.yaml \
-            --no-confirm-changeset \
-            --no-fail-on-empty-changeset \
-            --stack-name ${{ vars.AWS_STACK_NAME }} \
-            --s3-bucket ${{ vars.AWS_S3_BUCKET }} \
-            --capabilities CAPABILITY_IAM \
-            --region ${{ vars.AWS_REGION }} \
-            --no-disable-rollback \
-            --force-upload \
-            --parameter-overrides \
-              "Stage=${{ vars.STAGE_NAME }} \
-               DatabaseEngine=${{ vars.DATABASE_ENGINE || 'mysql' }} \
-               DataEncryptionKey=${{ secrets.DATA_ENCRYPTION_KEY }} \
-               DatabasePassword=${{ secrets.DATABASE_PASSWORD }} \
-               DatabaseUser=${{ secrets.DATABASE_USER }} \
-               ExistingDatabaseHost=${{ vars.DATABASE_HOST }} \
-               ExistingDatabaseAdminUser=${{ vars.DATABASE_ADMIN_USER }} \
-               ExistingDatabaseAdminPassword=${{ secrets.DATABASE_ADMIN_PASSWORD }} \
-               ExistingDatabaseNetworkMode=${{ vars.DATABASE_NETWORK_MODE || 'public' }} \
-               ExistingDatabaseSubnetIdsCsv=${{ vars.DATABASE_SUBNET_IDS_CSV }} \
-               ExistingDatabaseLambdaSecurityGroupId=${{ vars.DATABASE_LAMBDA_SECURITY_GROUP_ID }} \
-               ExistingDatabasePort=${{ vars.DATABASE_PORT }} \
-               ExistingDatabaseCreateAppUser=${{ vars.DATABASE_CREATE_APP_USER || 'true' }} \
-               ExistingDatabaseCreateSchema=${{ vars.DATABASE_CREATE_SCHEMA || 'true' }} \
-               ExistingDatabaseUsernamePrefix=${{ vars.DATABASE_USERNAME_PREFIX }} \
-               ExistingDatabaseAppUsername=${{ vars.DATABASE_APP_USERNAME }} \
-               DatabaseSchema=${{ vars.DATABASE_SCHEMA }} \
-               LogLevel=${{ vars.LOG_LEVEL || 'INFO' }} \
-               RequireAdmin=${{ vars.REQUIRE_ADMIN || 'true' }} \
-               SoftDeleteRetentionDays=${{ vars.SOFT_DELETE_RETENTION_DAYS || '30' }} \
-               SyncbotFederationEnabled=${{ vars.SYNCBOT_FEDERATION_ENABLED || 'false' }} \
-               SyncbotInstanceId=${{ vars.SYNCBOT_INSTANCE_ID }} \
-               SyncbotPublicUrl=${{ vars.SYNCBOT_PUBLIC_URL }} \
-               PrimaryWorkspace=${{ vars.PRIMARY_WORKSPACE }} \
-               EnableDbReset=${{ vars.ENABLE_DB_RESET }} \
-               EnableXRay=${{ vars.ENABLE_XRAY || 'false' }} \
-               SlackClientID=${{ vars.SLACK_CLIENT_ID }} \
-               SlackClientSecret=${{ secrets.SLACK_CLIENT_SECRET }} \
-               SlackSigningSecret=${{ secrets.SLACK_SIGNING_SECRET }}"
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_S3_BUCKET: ${{ vars.AWS_S3_BUCKET }}
+          AWS_STACK_NAME: ${{ vars.AWS_STACK_NAME }}
+          STAGE_NAME: ${{ vars.STAGE_NAME }}
+          DATABASE_ENGINE: ${{ vars.DATABASE_ENGINE || 'mysql' }}
+          DATA_ENCRYPTION_KEY: ${{ secrets.DATA_ENCRYPTION_KEY }}
+          DATABASE_PASSWORD: ${{ secrets.DATABASE_PASSWORD }}
+          DATABASE_USER: ${{ secrets.DATABASE_USER }}
+          DATABASE_HOST: ${{ vars.DATABASE_HOST }}
+          DATABASE_ADMIN_USER: ${{ vars.DATABASE_ADMIN_USER }}
+          DATABASE_ADMIN_PASSWORD: ${{ secrets.DATABASE_ADMIN_PASSWORD }}
+          DATABASE_NETWORK_MODE: ${{ vars.DATABASE_NETWORK_MODE || 'public' }}
+          DATABASE_SUBNET_IDS_CSV: ${{ vars.DATABASE_SUBNET_IDS_CSV }}
+          DATABASE_LAMBDA_SECURITY_GROUP_ID: ${{ vars.DATABASE_LAMBDA_SECURITY_GROUP_ID }}
+          DATABASE_PORT: ${{ vars.DATABASE_PORT }}
+          DATABASE_CREATE_APP_USER: ${{ vars.DATABASE_CREATE_APP_USER || 'true' }}
+          DATABASE_CREATE_SCHEMA: ${{ vars.DATABASE_CREATE_SCHEMA || 'true' }}
+          DATABASE_USERNAME_PREFIX: ${{ vars.DATABASE_USERNAME_PREFIX }}
+          DATABASE_APP_USERNAME: ${{ vars.DATABASE_APP_USERNAME }}
+          DATABASE_SCHEMA: ${{ vars.DATABASE_SCHEMA }}
+          LOG_LEVEL: ${{ vars.LOG_LEVEL || 'INFO' }}
+          REQUIRE_ADMIN: ${{ vars.REQUIRE_ADMIN || 'true' }}
+          SOFT_DELETE_RETENTION_DAYS: ${{ vars.SOFT_DELETE_RETENTION_DAYS || '30' }}
+          SYNCBOT_FEDERATION_ENABLED: ${{ vars.SYNCBOT_FEDERATION_ENABLED || 'false' }}
+          SYNCBOT_INSTANCE_ID: ${{ vars.SYNCBOT_INSTANCE_ID }}
+          SYNCBOT_PUBLIC_URL: ${{ vars.SYNCBOT_PUBLIC_URL }}
+          PRIMARY_WORKSPACE: ${{ vars.PRIMARY_WORKSPACE }}
+          ENABLE_DB_RESET: ${{ vars.ENABLE_DB_RESET }}
+          ENABLE_XRAY: ${{ vars.ENABLE_XRAY || 'false' }}
+          SLACK_CLIENT_ID: ${{ vars.SLACK_CLIENT_ID }}
+          SLACK_CLIENT_SECRET: ${{ secrets.SLACK_CLIENT_SECRET }}
+          SLACK_SIGNING_SECRET: ${{ secrets.SLACK_SIGNING_SECRET }}
+        run: bash infra/aws/scripts/ci_sam_deploy_with_fallback.sh
 
       - name: Run migrations and warm up Lambda
         run: |
