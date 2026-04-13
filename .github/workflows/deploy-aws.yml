@@ -173,11 +173,13 @@ jobs:
             --query "Stacks[0].Outputs[?OutputKey=='SyncBotApiUrl'].OutputValue" --output text)
           INSTALL_URL=$(aws cloudformation describe-stacks --stack-name "$STACK" \
             --query "Stacks[0].Outputs[?OutputKey=='SyncBotInstallUrl'].OutputValue" --output text)
+          OAUTH_URL="${API_URL%/slack/events}/slack/oauth_redirect"
           cat >> "$GITHUB_STEP_SUMMARY" <<EOF
           ## SyncBot Deploy (test)
           - **Stack**: $STACK
           - **API URL**: $API_URL
           - **Install URL**: $INSTALL_URL
+          - **OAuth Redirect URL**: $OAUTH_URL
           EOF
 
   sam-deploy-prod:
@@ -291,9 +293,11 @@ jobs:
             --query "Stacks[0].Outputs[?OutputKey=='SyncBotApiUrl'].OutputValue" --output text)
           INSTALL_URL=$(aws cloudformation describe-stacks --stack-name "$STACK" \
             --query "Stacks[0].Outputs[?OutputKey=='SyncBotInstallUrl'].OutputValue" --output text)
+          OAUTH_URL="${API_URL%/slack/events}/slack/oauth_redirect"
           cat >> "$GITHUB_STEP_SUMMARY" <<EOF
           ## SyncBot Deploy (prod)
           - **Stack**: $STACK
           - **API URL**: $API_URL
           - **Install URL**: $INSTALL_URL
+          - **OAuth Redirect URL**: $OAUTH_URL
           EOF
