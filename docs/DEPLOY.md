@@ -160,14 +160,19 @@ sam deploy \
     SlackOauthBotScopes=... \
     SlackOauthUserScopes=... \
     DatabaseEngine=mysql \
+    DatabaseSchema=syncbot_test \
     ...
 ```
 
 Use **`sam deploy --guided`** the first time if you prefer prompts. For **existing RDS**, set `ExistingDatabaseHost`, `ExistingDatabaseAdminUser`, `ExistingDatabaseAdminPassword`, and for **private** DBs also `ExistingDatabaseNetworkMode=private`, `ExistingDatabaseSubnetIdsCsv`, `ExistingDatabaseLambdaSecurityGroupId`. Optional: `ExistingDatabasePort` (empty = engine default), `ExistingDatabaseCreateAppUser` / `ExistingDatabaseCreateSchema` (`true`/`false`). Omit `ExistingDatabaseHost` to create a **new** RDS in the stack.
 
+**`DatabaseSchema` naming:** Use a per-stage database name such as `syncbot_test` / `syncbot_prod` (often `syncbot_` + `Stage`) so multiple environments can share one DB host without colliding. The app connects to the database named exactly by this parameter (and by the `DATABASE_SCHEMA` GitHub variable / `.env.deploy.*` value); it does **not** append the stage automatically. Match this name to the database your app user is granted on (e.g. same suffix as `sbapp_<stage>` from DbSetup).
+
 **samconfig:** Predefined profiles in `samconfig.toml` (`test-new-rds`, `test-existing-rds`, etc.) — adjust placeholders before use.
 
-**Secrets:** `DATA_ENCRYPTION_KEY`, `DATABASE_PASSWORD`, and optionally `DATABASE_USER` are SAM parameters with `NoEcho: true`. The deploy script auto-generates `DATA_ENCRYPTION_KEY` if empty and saves it back to the `.env.deploy` file. Back it up securely — if lost, all workspaces must reinstall. When using `DbSetup` (admin creds provided), `DATABASE_PASSWORD` and `DATABASE_USER` are also auto-generated if empty.
+**Secrets (SAM / CloudFormation):** `DATA_ENCRYPTION_KEY`, `DATABASE_PASSWORD`, and optionally `DATABASE_USER` are SAM parameters with `NoEcho: true`. The deploy script auto-generates `DATA_ENCRYPTION_KEY` if empty and saves it back to the `.env.deploy` file. Back it up securely — if lost, all workspaces must reinstall. When using `DbSetup` (admin creds provided), `DATABASE_PASSWORD` and `DATABASE_USER` are also auto-generated if empty.
+
+**GitHub Actions:** `DATABASE_USER` is a **repository environment variable** (not a secret)—set it to the same value as in your local `.env.deploy.<stage>` so CI matches your deploy file.
 
 **CloudWatch Logs:** Log retention is set to **30 days** in the SAM template (`RetentionInDays: 30`). Adjust in `infra/aws/template.yaml` if needed.
 
@@ -196,7 +201,7 @@ Configure **per-environment** (`test` / `prod`) variables and secrets so they ma
 |------|------|--------|
 | Var | `AWS_STACK_NAME` | CloudFormation stack name |
 | Var | `STAGE_NAME` | `test` or `prod` |
-| Var | `DATABASE_SCHEMA` | e.g. `syncbot_test` |
+| Var | `DATABASE_SCHEMA` | MySQL/Postgres **database name** (e.g. `syncbot_test`, `syncbot_prod`). Convention: `syncbot_<stage>` when sharing a host across stages; must match `DatabaseSchema` / grants for your app user. |
 | Var | `LOG_LEVEL` | Optional. `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. Passed to SAM as `LogLevel`; defaults to `INFO` in the workflow when unset. |
 | Var | `SLACK_CLIENT_ID` | From Slack app |
 | Var | `DATABASE_ENGINE` | `mysql` or `postgresql` (workflow defaults to `mysql` if unset) |
@@ -213,7 +218,7 @@ Configure **per-environment** (`test` / `prod`) variables and secrets so they ma
 | Secret | `SLACK_SIGNING_SECRET`, `SLACK_CLIENT_SECRET` | |
 | Secret | `DATA_ENCRYPTION_KEY` | Required; back up securely |
 | Secret | `DATABASE_PASSWORD` | App database password |
-| Secret | `DATABASE_USER` | Optional; pre-existing app DB user |
+| Var | `DATABASE_USER` | App DB username (same as local `.env.deploy.*`; not a secret) |
 | Secret | `DATABASE_ADMIN_PASSWORD` | When `DATABASE_HOST` is set |
 | Var | `ENABLE_XRAY` | Optional. `true` / `false`. AWS X-Ray tracing (default `false`). |
 
@@ -323,7 +328,7 @@ After deploying a build that changes Slack listener wiring, verify **in the depl
 
 ## Sharing infrastructure across apps (AWS)
 
-Reuse one RDS with **different `DatabaseSchema`** per app/environment; set **ExistingDatabaseHost** and distinct schemas. Lambda Function URLs remain per stack.
+Reuse one RDS with **different `DatabaseSchema`** per app/environment; set **ExistingDatabaseHost** and distinct schemas. Prefer names like `syncbot_test` vs `syncbot_prod` so each stage’s app user (`sbapp_<stage>` by default) maps cleanly to its own database. Lambda Function URLs remain per stack.
 
 ---
 
@@ -352,6 +357,10 @@ aws secretsmanager get-secret-value \
 ```
 
 After deploying with the new version, you can manually delete the orphaned secrets in AWS Secrets Manager to stop incurring charges.
+
+### GitHub: `DATABASE_USER` is a variable (not a secret)
+
+If your repo still has **`DATABASE_USER` under environment secrets**, remove it and create the same name under **environment variables** with the same value (or re-run `./deploy.sh` with CI/CD / `--setup-github` so `gh` writes the variable). The deploy workflow reads `${{ vars.DATABASE_USER }}`; a leftover secret is ignored.
 
 ### Secrets Manager removal (GCP)
 

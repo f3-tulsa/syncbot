@@ -11,6 +11,7 @@ DEPLOY_SCRIPTS = [
     REPO_ROOT / "deploy.sh",
     REPO_ROOT / "infra" / "gcp" / "scripts" / "deploy.sh",
     REPO_ROOT / "infra" / "aws" / "scripts" / "deploy.sh",
+    REPO_ROOT / "infra" / "aws" / "scripts" / "ci_sam_deploy_with_fallback.sh",
 ]
 
 

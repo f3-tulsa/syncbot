@@ -49,7 +49,7 @@ delete_orphaned_log_groups() {
       --region "$region" \
       --query 'logGroups[].logGroupName' \
       --output text 2>/dev/null | tr '\t' '\n' | grep -Fxq "$lg_name"; then
-      echo "=== Deleting orphaned log group: $lg_name ==="
+      echo "=== Deleting orphaned log group: $lg_name ===" >&2
       aws logs delete-log-group --log-group-name "$lg_name" --region "$region" 2>/dev/null || true
     fi
   done
@@ -126,6 +126,7 @@ deploy_via_update_stack() {
   local packaged template_key template_url cf_params_json
 
   packaged=".aws-sam/build/packaged-for-update-stack.yaml"
+  mkdir -p .aws-sam/build
   echo "=== SAM Package (for CloudFormation update-stack) ==="
   sam package \
     --template-file "$TEMPLATE" \

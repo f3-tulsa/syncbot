@@ -126,7 +126,7 @@ jobs:
           DATABASE_ENGINE: ${{ vars.DATABASE_ENGINE || 'mysql' }}
           DATA_ENCRYPTION_KEY: ${{ secrets.DATA_ENCRYPTION_KEY }}
           DATABASE_PASSWORD: ${{ secrets.DATABASE_PASSWORD }}
-          DATABASE_USER: ${{ secrets.DATABASE_USER }}
+          DATABASE_USER: ${{ vars.DATABASE_USER }}
           DATABASE_HOST: ${{ vars.DATABASE_HOST }}
           DATABASE_ADMIN_USER: ${{ vars.DATABASE_ADMIN_USER }}
           DATABASE_ADMIN_PASSWORD: ${{ secrets.DATABASE_ADMIN_PASSWORD }}
@@ -244,7 +244,7 @@ jobs:
           DATABASE_ENGINE: ${{ vars.DATABASE_ENGINE || 'mysql' }}
           DATA_ENCRYPTION_KEY: ${{ secrets.DATA_ENCRYPTION_KEY }}
           DATABASE_PASSWORD: ${{ secrets.DATABASE_PASSWORD }}
-          DATABASE_USER: ${{ secrets.DATABASE_USER }}
+          DATABASE_USER: ${{ vars.DATABASE_USER }}
           DATABASE_HOST: ${{ vars.DATABASE_HOST }}
           DATABASE_ADMIN_USER: ${{ vars.DATABASE_ADMIN_USER }}
           DATABASE_ADMIN_PASSWORD: ${{ secrets.DATABASE_ADMIN_PASSWORD }}

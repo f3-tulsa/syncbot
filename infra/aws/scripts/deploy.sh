@@ -639,6 +639,7 @@ configure_github_actions_aws() {
     gh_variable_set_env STAGE_NAME "$env_name" "$repo" "$deploy_stage"
     gh_variable_set_env DATABASE_SCHEMA "$env_name" "$repo" "$database_schema"
     gh_variable_set_env DATABASE_ENGINE "$env_name" "$repo" "$database_engine"
+    gh_variable_set_env SLACK_CLIENT_ID "$env_name" "$repo" "${SLACK_CLIENT_ID:-}"
     if [[ "$db_mode" == "2" ]]; then
       gh_variable_set_env DATABASE_HOST "$env_name" "$repo" "$db_host"
       gh_variable_set_env DATABASE_ADMIN_USER "$env_name" "$repo" "$db_admin_user"
@@ -655,6 +656,7 @@ configure_github_actions_aws() {
       gh_variable_set_env DATABASE_CREATE_SCHEMA "$env_name" "$repo" "$db_create_schema"
       gh_variable_set_env DATABASE_USERNAME_PREFIX "$env_name" "$repo" "$db_username_prefix"
       gh_variable_set_env DATABASE_APP_USERNAME "$env_name" "$repo" "$db_app_username"
+      gh_variable_set_env DATABASE_USER "$env_name" "$repo" "${DATABASE_USER:-}"
     else
       # Clear existing-host vars for new-RDS mode to avoid stale CI config.
       gh_variable_set_env DATABASE_HOST "$env_name" "$repo" ""
@@ -667,11 +669,12 @@ configure_github_actions_aws() {
       gh_variable_set_env DATABASE_CREATE_SCHEMA "$env_name" "$repo" "true"
       gh_variable_set_env DATABASE_USERNAME_PREFIX "$env_name" "$repo" ""
       gh_variable_set_env DATABASE_APP_USERNAME "$env_name" "$repo" ""
+      gh_variable_set_env DATABASE_USER "$env_name" "$repo" ""
     fi
     echo "Environment variables updated for '$env_name'."
   fi
 
-  echo "Setting GitHub environment secrets for '$env_name' (Slack, DATA_ENCRYPTION_KEY, DATABASE_*)..."
+  echo "Setting GitHub environment secrets for '$env_name' (Slack, DATA_ENCRYPTION_KEY, DATABASE_PASSWORD, ...)..."
   if [[ -z "${SLACK_SIGNING_SECRET:-}" ]]; then
     SLACK_SIGNING_SECRET="$(required_from_env_or_prompt "SLACK_SIGNING_SECRET" "SlackSigningSecret" "secret")"
   fi
@@ -682,7 +685,6 @@ configure_github_actions_aws() {
   gh secret set SLACK_CLIENT_SECRET --env "$env_name" --body "$SLACK_CLIENT_SECRET" -R "$repo"
   gh secret set DATA_ENCRYPTION_KEY --env "$env_name" --body "$DATA_ENCRYPTION_KEY" -R "$repo"
   gh secret set DATABASE_PASSWORD --env "$env_name" --body "$DATABASE_PASSWORD" -R "$repo"
-  [[ -n "${DATABASE_USER:-}" ]] && gh secret set DATABASE_USER --env "$env_name" --body "$DATABASE_USER" -R "$repo"
   if [[ "$db_mode" == "2" && -n "$db_admin_password" ]]; then
     gh secret set DATABASE_ADMIN_PASSWORD --env "$env_name" --body "$db_admin_password" -R "$repo"
   fi
@@ -1460,7 +1462,7 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
       gh_variable_set_env DATABASE_NETWORK_MODE "$ENV_NAME" "$REPO" "${DATABASE_NETWORK_MODE:-public}"
       if [[ "${DATABASE_NETWORK_MODE:-public}" == "private" ]]; then
         gh_variable_set_env DATABASE_SUBNET_IDS_CSV "$ENV_NAME" "$REPO" "${DATABASE_SUBNET_IDS_CSV:-}"
-        gh_variable_set_env DATABASE_LAMBDA_SECURITY_GROUP_ID "$ENV_NAME" "$REPO" "${DATABASE_LAMBDA_SECURITY_GROUP_ID:-}"
+        gh_variable_set_env DATABASE_LAMBDA_SECURITY_GROUP_ID "$ENV_NAME" "$REPO" "${DATABASE_LAMBDA_SG_ID:-${DATABASE_LAMBDA_SECURITY_GROUP_ID:-}}"
       else
         gh_variable_set_env DATABASE_SUBNET_IDS_CSV "$ENV_NAME" "$REPO" ""
         gh_variable_set_env DATABASE_LAMBDA_SECURITY_GROUP_ID "$ENV_NAME" "$REPO" ""
@@ -1470,6 +1472,7 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
       gh_variable_set_env DATABASE_CREATE_SCHEMA "$ENV_NAME" "$REPO" "${DATABASE_CREATE_SCHEMA:-true}"
       gh_variable_set_env DATABASE_USERNAME_PREFIX "$ENV_NAME" "$REPO" "${DATABASE_USERNAME_PREFIX:-}"
       gh_variable_set_env DATABASE_APP_USERNAME "$ENV_NAME" "$REPO" "${DATABASE_APP_USERNAME:-}"
+      gh_variable_set_env DATABASE_USER "$ENV_NAME" "$REPO" "${DATABASE_USER:-}"
     else
       gh_variable_set_env DATABASE_HOST "$ENV_NAME" "$REPO" ""
       gh_variable_set_env DATABASE_ADMIN_USER "$ENV_NAME" "$REPO" ""
@@ -1481,13 +1484,13 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
       gh_variable_set_env DATABASE_CREATE_SCHEMA "$ENV_NAME" "$REPO" "true"
       gh_variable_set_env DATABASE_USERNAME_PREFIX "$ENV_NAME" "$REPO" ""
       gh_variable_set_env DATABASE_APP_USERNAME "$ENV_NAME" "$REPO" ""
+      gh_variable_set_env DATABASE_USER "$ENV_NAME" "$REPO" ""
     fi
     echo "Setting GitHub environment secrets for '$ENV_NAME'..."
     gh secret set SLACK_SIGNING_SECRET --env "$ENV_NAME" --body "$SLACK_SIGNING_SECRET" -R "$REPO"
     gh secret set SLACK_CLIENT_SECRET --env "$ENV_NAME" --body "$SLACK_CLIENT_SECRET" -R "$REPO"
     gh secret set DATA_ENCRYPTION_KEY --env "$ENV_NAME" --body "$DATA_ENCRYPTION_KEY" -R "$REPO"
     gh secret set DATABASE_PASSWORD --env "$ENV_NAME" --body "$DATABASE_PASSWORD" -R "$REPO"
-    [[ -n "$DATABASE_USER" ]] && gh secret set DATABASE_USER --env "$ENV_NAME" --body "$DATABASE_USER" -R "$REPO"
     [[ -n "${DATABASE_ADMIN_PASSWORD:-}" ]] && gh secret set DATABASE_ADMIN_PASSWORD --env "$ENV_NAME" --body "$DATABASE_ADMIN_PASSWORD" -R "$REPO"
     echo "GitHub environment '$ENV_NAME' updated for repo $REPO."
   fi
@@ -1803,6 +1806,9 @@ if [[ "$DB_MODE" == "2" ]]; then
     DATABASE_ADMIN_PASSWORD="$(prompt_secret_required "DATABASE_ADMIN_PASSWORD")"
   fi
 
+  echo
+  echo "Database name (DatabaseSchema): use syncbot_${STAGE} or similar so each stage has its own DB on a shared host"
+  echo "(e.g. syncbot_test, syncbot_prod). The default below includes the stage you chose."
   DATABASE_SCHEMA="$(prompt_default "DatabaseSchema" "$DATABASE_SCHEMA_DEFAULT")"
 
   echo
@@ -1953,6 +1959,9 @@ else
   echo "=== New RDS Database ==="
   echo "New RDS mode uses:"
   echo "  - admin user: sbadmin_${STAGE}"
+  echo
+  echo "Database name (DatabaseSchema): use syncbot_${STAGE} or similar so each stage has its own DB on a shared host"
+  echo "(e.g. syncbot_test, syncbot_prod). The default below includes the stage you chose."
   DATABASE_SCHEMA="$(prompt_default "DatabaseSchema" "$DATABASE_SCHEMA_DEFAULT")"
   echo "Admin password for new RDS instance:"
   DATABASE_ADMIN_PASSWORD="$(required_from_env_or_prompt "DATABASE_ADMIN_PASSWORD" "DatabaseAdminPassword" "secret")"
@@ -2337,7 +2346,7 @@ if [[ "${SETUP_GITHUB:-}" == "true" && "$TASK_CICD" != "true" ]]; then
     gh_variable_set_env DATABASE_NETWORK_MODE "$ENV_NAME" "$REPO" "${DATABASE_NETWORK_MODE:-public}"
     if [[ "${DATABASE_NETWORK_MODE:-public}" == "private" ]]; then
       gh_variable_set_env DATABASE_SUBNET_IDS_CSV "$ENV_NAME" "$REPO" "${DATABASE_SUBNET_IDS_CSV:-}"
-      gh_variable_set_env DATABASE_LAMBDA_SECURITY_GROUP_ID "$ENV_NAME" "$REPO" "${DATABASE_LAMBDA_SECURITY_GROUP_ID:-}"
+      gh_variable_set_env DATABASE_LAMBDA_SECURITY_GROUP_ID "$ENV_NAME" "$REPO" "${DATABASE_LAMBDA_SG_ID:-${DATABASE_LAMBDA_SECURITY_GROUP_ID:-}}"
     else
       gh_variable_set_env DATABASE_SUBNET_IDS_CSV "$ENV_NAME" "$REPO" ""
       gh_variable_set_env DATABASE_LAMBDA_SECURITY_GROUP_ID "$ENV_NAME" "$REPO" ""
@@ -2347,6 +2356,7 @@ if [[ "${SETUP_GITHUB:-}" == "true" && "$TASK_CICD" != "true" ]]; then
     gh_variable_set_env DATABASE_CREATE_SCHEMA "$ENV_NAME" "$REPO" "${DATABASE_CREATE_SCHEMA:-true}"
     gh_variable_set_env DATABASE_USERNAME_PREFIX "$ENV_NAME" "$REPO" "${DATABASE_USERNAME_PREFIX:-}"
     gh_variable_set_env DATABASE_APP_USERNAME "$ENV_NAME" "$REPO" "${DATABASE_APP_USERNAME:-}"
+    gh_variable_set_env DATABASE_USER "$ENV_NAME" "$REPO" "${DATABASE_USER:-}"
   else
     gh_variable_set_env DATABASE_HOST "$ENV_NAME" "$REPO" ""
     gh_variable_set_env DATABASE_ADMIN_USER "$ENV_NAME" "$REPO" ""
@@ -2358,13 +2368,13 @@ if [[ "${SETUP_GITHUB:-}" == "true" && "$TASK_CICD" != "true" ]]; then
     gh_variable_set_env DATABASE_CREATE_SCHEMA "$ENV_NAME" "$REPO" "true"
     gh_variable_set_env DATABASE_USERNAME_PREFIX "$ENV_NAME" "$REPO" ""
     gh_variable_set_env DATABASE_APP_USERNAME "$ENV_NAME" "$REPO" ""
+    gh_variable_set_env DATABASE_USER "$ENV_NAME" "$REPO" ""
   fi
-  echo "Setting GitHub environment secrets for '$ENV_NAME'..."
+  echo "Setting GitHub environment secrets for '$ENV_NAME' (Slack, DATA_ENCRYPTION_KEY, DATABASE_PASSWORD, ...)..."
   gh secret set SLACK_SIGNING_SECRET --env "$ENV_NAME" --body "$SLACK_SIGNING_SECRET" -R "$REPO"
   gh secret set SLACK_CLIENT_SECRET --env "$ENV_NAME" --body "$SLACK_CLIENT_SECRET" -R "$REPO"
   gh secret set DATA_ENCRYPTION_KEY --env "$ENV_NAME" --body "$DATA_ENCRYPTION_KEY" -R "$REPO"
   gh secret set DATABASE_PASSWORD --env "$ENV_NAME" --body "$DATABASE_PASSWORD" -R "$REPO"
-  [[ -n "${DATABASE_USER:-}" ]] && gh secret set DATABASE_USER --env "$ENV_NAME" --body "$DATABASE_USER" -R "$REPO"
   [[ -n "${DATABASE_ADMIN_PASSWORD:-}" ]] && gh secret set DATABASE_ADMIN_PASSWORD --env "$ENV_NAME" --body "$DATABASE_ADMIN_PASSWORD" -R "$REPO"
   echo "GitHub environment '$ENV_NAME' updated for repo $REPO."
 fi
