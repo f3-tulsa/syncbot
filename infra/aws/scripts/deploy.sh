@@ -1505,6 +1505,9 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
   echo "Region:      $REGION"
   echo "API URL:     ${SYNCBOT_API_URL:-n/a}"
   echo "Install URL: ${SYNCBOT_INSTALL_URL:-n/a}"
+  if [[ -n "${SYNCBOT_API_URL:-}" ]]; then
+    echo "OAuth URL:   ${SYNCBOT_API_URL%/slack/events}/slack/oauth_redirect"
+  fi
   exit 0
 fi
 
@@ -2273,12 +2276,6 @@ if [[ "$TASK_CICD" == "true" ]]; then
     "${DATABASE_APP_USERNAME:-}"
 fi
 
-if [[ "$TASK_BUILD_DEPLOY" == "true" ]]; then
-  echo
-  echo "=== Deploy Receipt ==="
-  write_deploy_receipt
-fi
-
 # --- Save config to env file ---
 echo
 if prompt_yes_no "Save config to .env.deploy.${STAGE} for future deploys?" "y"; then
@@ -2380,4 +2377,15 @@ if [[ "${SETUP_GITHUB:-}" == "true" && "$TASK_CICD" != "true" ]]; then
 fi
 
 echo
+echo "=== Deploy Receipt ==="
+write_deploy_receipt
+
+echo
 echo "=== Deploy Complete ==="
+echo "Stack:       $STACK_NAME"
+echo "Region:      $REGION"
+echo "API URL:     ${SYNCBOT_API_URL:-n/a}"
+echo "Install URL: ${SYNCBOT_INSTALL_URL:-n/a}"
+if [[ -n "${SYNCBOT_API_URL:-}" ]]; then
+  echo "OAuth URL:   ${SYNCBOT_API_URL%/slack/events}/slack/oauth_redirect"
+fi
