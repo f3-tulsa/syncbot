@@ -79,7 +79,7 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: build-artifact
-          path: './.aws-sam/build'
+          path: '.'
 
       - uses: aws-actions/setup-sam@v2
         with:
@@ -197,7 +197,7 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: build-artifact
-          path: './.aws-sam/build'
+          path: '.'
 
       - uses: aws-actions/setup-sam@v2
         with:
