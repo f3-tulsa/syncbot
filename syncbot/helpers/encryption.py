@@ -1,8 +1,9 @@
-"""Bot-token encryption / decryption using Fernet (AES-128-CBC + HMAC-SHA256).
+"""Data-at-rest encryption / decryption using Fernet (AES-128-CBC + HMAC-SHA256).
 
-The TOKEN_ENCRYPTION_KEY env var is stretched to a 32-byte key using
-PBKDF2-HMAC-SHA256 with 600,000 iterations.  The derived Fernet instance
-is cached so the expensive KDF runs at most once per key per process.
+The DATA_ENCRYPTION_KEY env var (legacy: TOKEN_ENCRYPTION_KEY) is stretched
+to a 32-byte key using PBKDF2-HMAC-SHA256 with 600,000 iterations.  The
+derived Fernet instance is cached so the expensive KDF runs at most once
+per key per process.
 """
 
 import base64
@@ -37,9 +38,14 @@ def _get_fernet(key: str) -> Fernet:
     return Fernet(base64.urlsafe_b64encode(derived))
 
 
+def _resolve_encryption_key() -> str:
+    """Return the encryption key from DATA_ENCRYPTION_KEY or legacy TOKEN_ENCRYPTION_KEY."""
+    return os.environ.get(constants.DATA_ENCRYPTION_KEY) or os.environ.get(constants._DATA_ENCRYPTION_KEY_LEGACY, "")
+
+
 def _encryption_enabled() -> bool:
-    """Return *True* if bot-token encryption is active."""
-    key = os.environ.get(constants.TOKEN_ENCRYPTION_KEY, "")
+    """Return *True* if data-at-rest encryption is active."""
+    key = _resolve_encryption_key()
     return bool(key) and key != "123"
 
 
@@ -47,7 +53,7 @@ def encrypt_bot_token(token: str) -> str:
     """Encrypt a bot token before storing it in the database."""
     if not _encryption_enabled():
         return token
-    key = os.environ[constants.TOKEN_ENCRYPTION_KEY]
+    key = _resolve_encryption_key()
     return _get_fernet(key).encrypt(token.encode()).decode()
 
 
@@ -58,7 +64,7 @@ def decrypt_bot_token(encrypted: str) -> str:
     """
     if not _encryption_enabled():
         return encrypted
-    key = os.environ[constants.TOKEN_ENCRYPTION_KEY]
+    key = _resolve_encryption_key()
     try:
         return _get_fernet(key).decrypt(encrypted.encode()).decode()
     except InvalidToken:

@@ -5,14 +5,17 @@
 # Run from repo root:
 #   ./infra/aws/scripts/deploy.sh
 #
-# Phases (main path, after functions are defined below):
+# Non-interactive path (ENV_FILE_LOADED=true):
+#   Sources .env.deploy.{stage}, builds SAM params from env vars, runs sam build + deploy.
+#
+# Interactive path (no --env flag):
 #   1) Prerequisites: CLI checks, template paths
 #   2) Authentication: AWS region and credentials
 #   3) Bootstrap probe: read bootstrap stack outputs (create/sync runs only if task 1 selected)
 #   4) Stack identity: stage, app stack name; detect existing stack for update
-#   5) Deploy Tasks: multi-select menu (bootstrap, build/deploy, CI/CD, Slack API, backup secrets)
+#   5) Deploy Tasks: multi-select menu (bootstrap, build/deploy, CI/CD, Slack API)
 #   6) Configuration (if build/deploy): database, Slack creds, SAM build + deploy
-#   7) Post-tasks: Slack manifest/API, GitHub Actions, deploy receipt, DR secret backup
+#   7) Post-tasks: Slack manifest/API, GitHub Actions, deploy receipt
 
 set -euo pipefail
 
@@ -22,17 +25,163 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 BOOTSTRAP_TEMPLATE="$REPO_ROOT/infra/aws/template.bootstrap.yaml"
 APP_TEMPLATE="$REPO_ROOT/infra/aws/template.yaml"
 SLACK_MANIFEST_GENERATED_PATH=""
-APP_DB_PASSWORD_OVERRIDE="${APP_DB_PASSWORD_OVERRIDE:-}"
-APP_DB_PASSWORD_REUSED_FROM_SECRET=""
-SLACK_SIGNING_SECRET_SOURCE=""
-SLACK_CLIENT_SECRET_SOURCE=""
-EXISTING_DB_ADMIN_PASSWORD_SOURCE=""
-# Populated before write_deploy_receipt: backup summary + markdown receipt (deploy-receipts/*.md).
-RECEIPT_TOKEN_SECRET_ID=""
-RECEIPT_APP_DB_SECRET_NAME=""
 
 # shellcheck source=/dev/null
 source "$REPO_ROOT/deploy.sh"
+
+# ---------------------------------------------------------------------------
+# SAM deploy with fallback to direct CloudFormation update-stack
+# When sam deploy fails because changeset early validation rejects the update
+# (e.g. AWS::EarlyValidation::ResourceExistenceCheck), retry with update-stack,
+# which skips changeset creation. Optional --update-stack skips sam deploy.
+# Uses globals: STACK_NAME, REGION, S3_BUCKET, PARAMS (update-stack converts PARAMS to JSON)
+# ---------------------------------------------------------------------------
+delete_failed_changesets() {
+  local stack_name="$1" region="$2" names cs
+  names="$(aws cloudformation list-change-sets \
+    --stack-name "$stack_name" \
+    --region "$region" \
+    --query 'Summaries[?Status==`FAILED`].ChangeSetName' \
+    --output text 2>/dev/null || true)"
+  [[ -z "$names" || "$names" == "None" ]] && return 0
+  for cs in $names; do
+    [[ -z "$cs" ]] && continue
+    aws cloudformation delete-change-set \
+      --change-set-name "$cs" \
+      --stack-name "$stack_name" \
+      --region "$region" 2>/dev/null || true
+  done
+}
+
+# Lambda may auto-create /aws/lambda/<name> before CloudFormation's LogGroup resource runs,
+# causing ResourceExistenceCheck / AlreadyExists on deploy. Delete those so CF can create them.
+delete_orphaned_log_groups() {
+  local stack="$1" region="$2" functions fn lg_name
+  functions="$(aws cloudformation list-stack-resources \
+    --stack-name "$stack" \
+    --region "$region" \
+    --query "StackResourceSummaries[?ResourceType=='AWS::Lambda::Function'].PhysicalResourceId" \
+    --output text 2>/dev/null || true)"
+  [[ -z "$functions" || "$functions" == "None" ]] && return 0
+  for fn in $functions; do
+    [[ -z "$fn" ]] && continue
+    lg_name="/aws/lambda/${fn}"
+    if aws logs describe-log-groups \
+      --log-group-name-prefix "$lg_name" \
+      --region "$region" \
+      --query 'logGroups[].logGroupName' \
+      --output text 2>/dev/null | tr '\t' '\n' | grep -Fxq "$lg_name"; then
+      echo "=== Deleting orphaned log group: $lg_name ===" >&2
+      aws logs delete-log-group --log-group-name "$lg_name" --region "$region" 2>/dev/null || true
+    fi
+  done
+}
+
+# GitHub Actions variables cannot be empty strings (HTTP 422). Delete if empty, set otherwise.
+# Piping avoids gh treating --body "" as interactive stdin in some gh versions.
+gh_variable_set_env() {
+  local name="$1" env_name="$2" repo="$3" value="${4:-}"
+  if [[ -z "$value" ]]; then
+    gh variable delete "$name" --env "$env_name" -R "$repo" 2>/dev/null || true
+  else
+    printf '%s' "$value" | gh variable set "$name" --env "$env_name" -R "$repo"
+  fi
+}
+
+# Convert Key=Value lines (stdin or pipe) to JSON for aws cloudformation update-stack --parameters.
+params_to_json() {
+  python3 -c "
+import json, sys
+result = []
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    k, _, v = line.partition('=')
+    result.append({'ParameterKey': k, 'ParameterValue': v})
+print(json.dumps(result))
+"
+}
+
+deploy_via_update_stack() {
+  local packaged template_key template_url cf_params_json
+
+  mkdir -p .aws-sam/build
+  packaged=".aws-sam/build/packaged-for-update-stack.yaml"
+
+  echo "=== SAM Package (for CloudFormation update-stack) ===" >&2
+  sam package \
+    --template-file .aws-sam/build/template.yaml \
+    --s3-bucket "$S3_BUCKET" \
+    --output-template-file "$packaged" \
+    --region "$REGION"
+
+  template_key="packaged-templates/${STACK_NAME}-$(date +%s)-$$.yaml"
+  echo "=== Upload packaged template to s3://${S3_BUCKET}/${template_key} ===" >&2
+  aws s3 cp "$packaged" "s3://${S3_BUCKET}/${template_key}" --region "$REGION"
+
+  template_url="https://${S3_BUCKET}.s3.${REGION}.amazonaws.com/${template_key}"
+
+  cf_params_json="$(printf '%s\n' "${PARAMS[@]}" | params_to_json)"
+
+  echo "=== CloudFormation update-stack ===" >&2
+  aws cloudformation update-stack \
+    --stack-name "$STACK_NAME" \
+    --template-url "$template_url" \
+    --capabilities CAPABILITY_IAM CAPABILITY_AUTO_EXPAND \
+    --region "$REGION" \
+    --parameters "$cf_params_json"
+
+  echo "=== Waiting for stack update to complete ===" >&2
+  aws cloudformation wait stack-update-complete --stack-name "$STACK_NAME" --region "$REGION"
+}
+
+sam_deploy_or_fallback() {
+  if [[ "${UPDATE_STACK:-}" == "true" ]]; then
+    echo "=== SAM Deploy (direct update-stack; --update-stack set) ===" >&2
+    deploy_via_update_stack
+    return 0
+  fi
+
+  local log rc
+  local -a sam_params=()
+  local _p
+  log="$(mktemp)"
+  trap 'rm -f "$log"' RETURN
+
+  for _p in "${PARAMS[@]}"; do
+    [[ "$_p" == *"="?* ]] && sam_params+=("$_p")
+  done
+
+  set +e
+  set -o pipefail
+  sam deploy \
+    -t .aws-sam/build/template.yaml \
+    --stack-name "$STACK_NAME" \
+    --s3-bucket "$S3_BUCKET" \
+    --capabilities CAPABILITY_IAM \
+    --region "$REGION" \
+    --no-fail-on-empty-changeset \
+    --parameter-overrides "${sam_params[@]}" 2>&1 | tee "$log"
+  rc="${PIPESTATUS[0]}"
+  set +o pipefail
+  set -e
+
+  if [[ "$rc" -eq 0 ]]; then
+    return 0
+  fi
+
+  if grep -q 'EarlyValidation::ResourceExistenceCheck' "$log"; then
+    echo "" >&2
+    echo "=== Changeset rejected by CloudFormation early validation; retrying with direct update-stack... ===" >&2
+    delete_failed_changesets "$STACK_NAME" "$REGION" || true
+    delete_orphaned_log_groups "$STACK_NAME" "$REGION" || true
+    deploy_via_update_stack
+    return 0
+  fi
+
+  return "$rc"
+}
 
 prompt_default() {
   local prompt="$1"
@@ -410,18 +559,18 @@ configure_github_actions_aws() {
   # $5  Stage name (test|prod) — GitHub environment name
   # $6  Database schema name
   # $7  DB source mode: 1 = stack-managed RDS, 2 = external or existing host (matches SAM / prompts)
-  # $8  Existing DB host (mode 2)
-  # $9  Existing DB admin user (mode 2)
-  # $10 Existing DB admin password (mode 2)
-  # $11 Existing DB network mode: public | private
+  # $8  DB host (mode 2)
+  # $9  DB admin user (mode 2)
+  # $10 DB admin password (mode 2)
+  # $11 DB network mode: public | private
   # $12 Comma-separated subnet IDs for Lambda in private mode
   # $13 Lambda ENI security group id in private mode
   # $14 Database engine: mysql | postgresql
-  # $15 Existing DB port (empty = engine default in SAM)
-  # $16 ExistingDatabaseCreateAppUser: true | false
-  # $17 ExistingDatabaseCreateSchema: true | false
-  # $18 ExistingDatabaseUsernamePrefix (e.g. TiDB cluster prefix; empty for RDS)
-  # $19 ExistingDatabaseAppUsername (optional full app DB user; empty = default)
+  # $15 DB port override (empty = engine default in SAM)
+  # $16 DATABASE_CREATE_APP_USER: true | false
+  # $17 DATABASE_CREATE_SCHEMA: true | false
+  # $18 DATABASE_USERNAME_PREFIX (e.g. TiDB cluster prefix; empty for RDS)
+  # $19 DATABASE_APP_USERNAME (optional full app DB user; empty = default)
   local bootstrap_outputs="$1"
   local bootstrap_stack_name="$2"
   local aws_region="$3"
@@ -429,22 +578,22 @@ configure_github_actions_aws() {
   local deploy_stage="$5"
   local database_schema="$6"
   local db_mode="$7"
-  local existing_db_host="$8"
-  local existing_db_admin_user="$9"
-  local existing_db_admin_password="${10}"
-  local existing_db_network_mode="${11:-}"
-  [[ -z "$existing_db_network_mode" ]] && existing_db_network_mode="public"
-  local existing_db_subnet_ids_csv="${12:-}"
-  local existing_db_lambda_sg_id="${13:-}"
+  local db_host="$8"
+  local db_admin_user="$9"
+  local db_admin_password="${10}"
+  local db_network_mode="${11:-}"
+  [[ -z "$db_network_mode" ]] && db_network_mode="public"
+  local db_subnet_ids_csv="${12:-}"
+  local db_lambda_sg_id="${13:-}"
   local database_engine="${14:-}"
   [[ -z "$database_engine" ]] && database_engine="mysql"
-  local existing_db_port="${15:-}"
-  local existing_db_create_app_user="${16:-true}"
-  local existing_db_create_schema="${17:-true}"
-  local existing_db_username_prefix="${18:-}"
-  local existing_db_app_username="${19:-}"
-  [[ -z "$existing_db_create_app_user" ]] && existing_db_create_app_user="true"
-  [[ -z "$existing_db_create_schema" ]] && existing_db_create_schema="true"
+  local db_port="${15:-}"
+  local db_create_app_user="${16:-true}"
+  local db_create_schema="${17:-true}"
+  local db_username_prefix="${18:-}"
+  local db_app_username="${19:-}"
+  [[ -z "$db_create_app_user" ]] && db_create_app_user="true"
+  [[ -z "$db_create_schema" ]] && db_create_schema="true"
   local role bucket boot_region
   role="$(output_value "$bootstrap_outputs" "GitHubDeployRoleArn")"
   bucket="$(output_value "$bootstrap_outputs" "DeploymentBucketName")"
@@ -468,7 +617,7 @@ configure_github_actions_aws() {
     echo "  AWS_S3_BUCKET      = $bucket  (SAM deploy artifact bucket / DeploymentBucketName; not Slack file storage)"
     echo "  AWS_REGION         = $boot_region"
     echo "For environment '$env_name' also set AWS_STACK_NAME, STAGE_NAME, DATABASE_SCHEMA, DATABASE_ENGINE,"
-    echo "and (if using existing RDS) EXISTING_DATABASE_* / private VPC vars — see docs/DEPLOYMENT.md."
+    echo "and (if using external DB) DATABASE_* / private VPC vars — see docs/DEPLOY.md."
     return 0
   fi
 
@@ -486,58 +635,60 @@ configure_github_actions_aws() {
   fi
 
   if prompt_yes_no "Set environment variables for '$env_name' now (AWS_STACK_NAME, STAGE_NAME, DATABASE_SCHEMA, DB host/user vars)?" "y"; then
-    gh variable set AWS_STACK_NAME --env "$env_name" --body "$app_stack_name" -R "$repo"
-    gh variable set STAGE_NAME --env "$env_name" --body "$deploy_stage" -R "$repo"
-    gh variable set DATABASE_SCHEMA --env "$env_name" --body "$database_schema" -R "$repo"
-    gh variable set DATABASE_ENGINE --env "$env_name" --body "$database_engine" -R "$repo"
+    gh_variable_set_env AWS_STACK_NAME "$env_name" "$repo" "$app_stack_name"
+    gh_variable_set_env STAGE_NAME "$env_name" "$repo" "$deploy_stage"
+    gh_variable_set_env DATABASE_SCHEMA "$env_name" "$repo" "$database_schema"
+    gh_variable_set_env DATABASE_ENGINE "$env_name" "$repo" "$database_engine"
+    gh_variable_set_env SLACK_CLIENT_ID "$env_name" "$repo" "${SLACK_CLIENT_ID:-}"
     if [[ "$db_mode" == "2" ]]; then
-      gh variable set EXISTING_DATABASE_HOST --env "$env_name" --body "$existing_db_host" -R "$repo"
-      gh variable set EXISTING_DATABASE_ADMIN_USER --env "$env_name" --body "$existing_db_admin_user" -R "$repo"
-      gh variable set EXISTING_DATABASE_NETWORK_MODE --env "$env_name" --body "$existing_db_network_mode" -R "$repo"
-      if [[ "$existing_db_network_mode" == "private" ]]; then
-        gh variable set EXISTING_DATABASE_SUBNET_IDS_CSV --env "$env_name" --body "$existing_db_subnet_ids_csv" -R "$repo"
-        gh variable set EXISTING_DATABASE_LAMBDA_SECURITY_GROUP_ID --env "$env_name" --body "$existing_db_lambda_sg_id" -R "$repo"
+      gh_variable_set_env DATABASE_HOST "$env_name" "$repo" "$db_host"
+      gh_variable_set_env DATABASE_ADMIN_USER "$env_name" "$repo" "$db_admin_user"
+      gh_variable_set_env DATABASE_NETWORK_MODE "$env_name" "$repo" "$db_network_mode"
+      if [[ "$db_network_mode" == "private" ]]; then
+        gh_variable_set_env DATABASE_SUBNET_IDS_CSV "$env_name" "$repo" "$db_subnet_ids_csv"
+        gh_variable_set_env DATABASE_LAMBDA_SECURITY_GROUP_ID "$env_name" "$repo" "$db_lambda_sg_id"
       else
-        gh variable set EXISTING_DATABASE_SUBNET_IDS_CSV --env "$env_name" --body "" -R "$repo"
-        gh variable set EXISTING_DATABASE_LAMBDA_SECURITY_GROUP_ID --env "$env_name" --body "" -R "$repo"
+        gh_variable_set_env DATABASE_SUBNET_IDS_CSV "$env_name" "$repo" ""
+        gh_variable_set_env DATABASE_LAMBDA_SECURITY_GROUP_ID "$env_name" "$repo" ""
       fi
-      gh variable set EXISTING_DATABASE_PORT --env "$env_name" --body "$existing_db_port" -R "$repo"
-      gh variable set EXISTING_DATABASE_CREATE_APP_USER --env "$env_name" --body "$existing_db_create_app_user" -R "$repo"
-      gh variable set EXISTING_DATABASE_CREATE_SCHEMA --env "$env_name" --body "$existing_db_create_schema" -R "$repo"
-      gh variable set EXISTING_DATABASE_USERNAME_PREFIX --env "$env_name" --body "$existing_db_username_prefix" -R "$repo"
-      gh variable set EXISTING_DATABASE_APP_USERNAME --env "$env_name" --body "$existing_db_app_username" -R "$repo"
+      gh_variable_set_env DATABASE_PORT "$env_name" "$repo" "$db_port"
+      gh_variable_set_env DATABASE_CREATE_APP_USER "$env_name" "$repo" "$db_create_app_user"
+      gh_variable_set_env DATABASE_CREATE_SCHEMA "$env_name" "$repo" "$db_create_schema"
+      gh_variable_set_env DATABASE_USERNAME_PREFIX "$env_name" "$repo" "$db_username_prefix"
+      gh_variable_set_env DATABASE_APP_USERNAME "$env_name" "$repo" "$db_app_username"
+      gh_variable_set_env DATABASE_USER "$env_name" "$repo" "${DATABASE_USER:-}"
     else
       # Clear existing-host vars for new-RDS mode to avoid stale CI config.
-      gh variable set EXISTING_DATABASE_HOST --env "$env_name" --body "" -R "$repo"
-      gh variable set EXISTING_DATABASE_ADMIN_USER --env "$env_name" --body "" -R "$repo"
-      gh variable set EXISTING_DATABASE_NETWORK_MODE --env "$env_name" --body "public" -R "$repo"
-      gh variable set EXISTING_DATABASE_SUBNET_IDS_CSV --env "$env_name" --body "" -R "$repo"
-      gh variable set EXISTING_DATABASE_LAMBDA_SECURITY_GROUP_ID --env "$env_name" --body "" -R "$repo"
-      gh variable set EXISTING_DATABASE_PORT --env "$env_name" --body "" -R "$repo"
-      gh variable set EXISTING_DATABASE_CREATE_APP_USER --env "$env_name" --body "true" -R "$repo"
-      gh variable set EXISTING_DATABASE_CREATE_SCHEMA --env "$env_name" --body "true" -R "$repo"
-      gh variable set EXISTING_DATABASE_USERNAME_PREFIX --env "$env_name" --body "" -R "$repo"
-      gh variable set EXISTING_DATABASE_APP_USERNAME --env "$env_name" --body "" -R "$repo"
+      gh_variable_set_env DATABASE_HOST "$env_name" "$repo" ""
+      gh_variable_set_env DATABASE_ADMIN_USER "$env_name" "$repo" ""
+      gh_variable_set_env DATABASE_NETWORK_MODE "$env_name" "$repo" "public"
+      gh_variable_set_env DATABASE_SUBNET_IDS_CSV "$env_name" "$repo" ""
+      gh_variable_set_env DATABASE_LAMBDA_SECURITY_GROUP_ID "$env_name" "$repo" ""
+      gh_variable_set_env DATABASE_PORT "$env_name" "$repo" ""
+      gh_variable_set_env DATABASE_CREATE_APP_USER "$env_name" "$repo" "true"
+      gh_variable_set_env DATABASE_CREATE_SCHEMA "$env_name" "$repo" "true"
+      gh_variable_set_env DATABASE_USERNAME_PREFIX "$env_name" "$repo" ""
+      gh_variable_set_env DATABASE_APP_USERNAME "$env_name" "$repo" ""
+      gh_variable_set_env DATABASE_USER "$env_name" "$repo" ""
     fi
     echo "Environment variables updated for '$env_name'."
   fi
 
-  if prompt_yes_no "Set environment secrets for '$env_name' now (Slack secrets + optional Existing DB admin password)?" "n"; then
-    if [[ -z "${SLACK_SIGNING_SECRET:-}" ]]; then
-      SLACK_SIGNING_SECRET_SOURCE="prompt"
-      SLACK_SIGNING_SECRET="$(required_from_env_or_prompt "SLACK_SIGNING_SECRET" "SlackSigningSecret" "secret")"
-    fi
-    if [[ -z "${SLACK_CLIENT_SECRET:-}" ]]; then
-      SLACK_CLIENT_SECRET_SOURCE="prompt"
-      SLACK_CLIENT_SECRET="$(required_from_env_or_prompt "SLACK_CLIENT_SECRET" "SlackClientSecret" "secret")"
-    fi
-    gh secret set SLACK_SIGNING_SECRET --env "$env_name" --body "$SLACK_SIGNING_SECRET" -R "$repo"
-    gh secret set SLACK_CLIENT_SECRET --env "$env_name" --body "$SLACK_CLIENT_SECRET" -R "$repo"
-    if [[ "$db_mode" == "2" && -n "$existing_db_admin_password" ]]; then
-      gh secret set EXISTING_DATABASE_ADMIN_PASSWORD --env "$env_name" --body "$existing_db_admin_password" -R "$repo"
-    fi
-    echo "Environment secrets updated for '$env_name'."
+  echo "Setting GitHub environment secrets for '$env_name' (Slack, DATA_ENCRYPTION_KEY, DATABASE_PASSWORD, ...)..."
+  if [[ -z "${SLACK_SIGNING_SECRET:-}" ]]; then
+    SLACK_SIGNING_SECRET="$(required_from_env_or_prompt "SLACK_SIGNING_SECRET" "SlackSigningSecret" "secret")"
   fi
+  if [[ -z "${SLACK_CLIENT_SECRET:-}" ]]; then
+    SLACK_CLIENT_SECRET="$(required_from_env_or_prompt "SLACK_CLIENT_SECRET" "SlackClientSecret" "secret")"
+  fi
+  gh secret set SLACK_SIGNING_SECRET --env "$env_name" --body "$SLACK_SIGNING_SECRET" -R "$repo"
+  gh secret set SLACK_CLIENT_SECRET --env "$env_name" --body "$SLACK_CLIENT_SECRET" -R "$repo"
+  gh secret set DATA_ENCRYPTION_KEY --env "$env_name" --body "$DATA_ENCRYPTION_KEY" -R "$repo"
+  gh secret set DATABASE_PASSWORD --env "$env_name" --body "$DATABASE_PASSWORD" -R "$repo"
+  if [[ "$db_mode" == "2" && -n "$db_admin_password" ]]; then
+    gh secret set DATABASE_ADMIN_PASSWORD --env "$env_name" --body "$db_admin_password" -R "$repo"
+  fi
+  echo "Environment secrets updated for '$env_name'."
 }
 
 generate_stage_slack_manifest() {
@@ -594,234 +745,101 @@ PY
   sed 's/^/  /' "$manifest_out"
 }
 
-secret_arn_by_name() {
-  local secret_name="$1"
-  local region="$2"
-  aws secretsmanager describe-secret \
-    --secret-id "$secret_name" \
-    --region "$region" \
-    --query 'ARN' \
-    --output text 2>/dev/null || true
-}
-
-secret_value_by_id() {
-  local secret_id="$1"
-  local region="$2"
-  aws secretsmanager get-secret-value \
-    --secret-id "$secret_id" \
-    --region "$region" \
-    --query 'SecretString' \
-    --output text 2>/dev/null || true
-}
-
 rds_lookup_admin_defaults() {
   local db_host="$1"
   local region="$2"
   aws rds describe-db-instances \
     --region "$region" \
-    --query "DBInstances[?Endpoint.Address=='$db_host']|[0].[MasterUsername,MasterUserSecret.SecretArn]" \
+    --query "DBInstances[?Endpoint.Address=='$db_host']|[0].[MasterUsername]" \
     --output text 2>/dev/null || true
 }
 
-secret_password_by_id() {
-  local secret_id="$1"
-  local region="$2"
-  local raw
-  raw="$(secret_value_by_id "$secret_id" "$region")"
-  if [[ -z "$raw" || "$raw" == "None" ]]; then
-    return 1
-  fi
-  python3 - "$raw" <<'PY'
-import json
-import sys
-
-raw = sys.argv[1]
-if not raw or raw == "None":
-    print("")
-    raise SystemExit(0)
-
-try:
-    data = json.loads(raw)
-except Exception:
-    print(raw)
-    raise SystemExit(0)
-
-if isinstance(data, dict):
-    password = data.get("password")
-    if isinstance(password, str) and password:
-        print(password)
-    else:
-        print("")
-else:
-    print("")
-PY
-}
-
-wait_for_secret_deleted() {
-  local secret_id="$1"
-  local region="$2"
-  local max_attempts="${3:-20}"
-  local sleep_seconds="${4:-3}"
-  local attempt
-  for ((attempt = 1; attempt <= max_attempts; attempt++)); do
-    if ! aws secretsmanager describe-secret --secret-id "$secret_id" --region "$region" >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep "$sleep_seconds"
-  done
-  return 1
-}
-
-handle_orphan_app_db_secret_on_create() {
-  local stack_status="$1"
-  local secret_name="$2"
-  local region="$3"
-  local secret_arn reuse_value
-
-  # Only needed for brand-new stack creates where a previous failed stack left the named secret.
-  if [[ -n "$stack_status" && "$stack_status" != "None" ]]; then
-    return 0
-  fi
-
-  secret_arn="$(secret_arn_by_name "$secret_name" "$region")"
-  if [[ -z "$secret_arn" || "$secret_arn" == "None" ]]; then
-    return 0
-  fi
-
-  echo "Detected existing app DB secret: $secret_name"
-  if [[ -z "$APP_DB_PASSWORD_OVERRIDE" ]]; then
-    if prompt_yes_no "Reuse existing app DB password value when recreating this secret?" "y"; then
-      reuse_value="$(secret_password_by_id "$secret_arn" "$region" 2>/dev/null || true)"
-      if [[ -n "$reuse_value" && "$reuse_value" != "None" ]]; then
-        APP_DB_PASSWORD_OVERRIDE="$reuse_value"
-        APP_DB_PASSWORD_REUSED_FROM_SECRET="$secret_name"
-        echo "Will reuse existing app DB password value."
-      else
-        echo "Could not read existing app DB secret value; deploy will create a new app DB password."
-      fi
-    fi
-  else
-    echo "Using provided AppDbPasswordOverride for secret recreation."
-    [[ -z "$APP_DB_PASSWORD_REUSED_FROM_SECRET" ]] && APP_DB_PASSWORD_REUSED_FROM_SECRET="provided-override"
-  fi
-
-  if ! prompt_yes_no "Delete detected secret now so create can continue?" "y"; then
-    echo "Cannot create new stack while this secret name already exists." >&2
-    echo "Delete it manually or choose a different stage/stack." >&2
-    exit 1
-  fi
-
-  if ! aws secretsmanager delete-secret \
-    --secret-id "$secret_arn" \
-    --region "$region" \
-    --force-delete-without-recovery >/dev/null 2>&1; then
-    echo "Failed to delete secret '$secret_name'. Check IAM permissions and retry." >&2
-    exit 1
-  fi
-
-  echo "Deleted secret '$secret_name'. Waiting for name to become available..."
-  if ! wait_for_secret_deleted "$secret_arn" "$region"; then
-    echo "Secret deletion is still propagating. Wait a minute and rerun deploy." >&2
-    exit 1
-  fi
-}
-
 write_deploy_receipt() {
-  local provider="$1"
-  local stage="$2"
-  local project_or_stack="$3"
-  local region="$4"
-  local service_url="$5"
-  local install_url="$6"
-  local manifest_path="$7"
   local ts_human ts_file receipt_dir receipt_path
+  local api_url="${SYNCBOT_API_URL:-}"
+  local base_url="${api_url%/slack/events}"
+  local oauth_redirect_url=""
+  [[ -n "$base_url" ]] && oauth_redirect_url="${base_url}/slack/oauth_redirect"
 
   ts_human="$(date -u +"%Y-%m-%d %H:%M:%S UTC")"
   ts_file="$(date -u +"%Y%m%dT%H%M%SZ")"
   receipt_dir="$REPO_ROOT/deploy-receipts"
-  receipt_path="$receipt_dir/deploy-${provider}-${stage}-${ts_file}.md"
+  receipt_path="$receipt_dir/deploy-aws-${STAGE}-${ts_file}.md"
 
   mkdir -p "$receipt_dir"
-  cat >"$receipt_path" <<EOF
+  {
+    cat <<EOF
 # SyncBot Deploy Receipt
 
-- Provider: $provider
-- Stage: $stage
+- Provider: aws
+- Stage: $STAGE
 - Timestamp: $ts_human
-- Project/Stack: $project_or_stack
-- Region: $region
-- Service URL: ${service_url:-n/a}
-- Slack Install URL: ${install_url:-n/a}
-- Slack Manifest: ${manifest_path:-n/a}
+- Project/Stack: $STACK_NAME
+- Region: $REGION
 
-## Secrets Used
-- SlackSigningSecret source: ${SLACK_SIGNING_SECRET_SOURCE:-unknown}
-- SlackClientSecret source: ${SLACK_CLIENT_SECRET_SOURCE:-unknown}
-- Existing DB admin password source: ${EXISTING_DB_ADMIN_PASSWORD_SOURCE:-n/a}
-- Token secret id: ${RECEIPT_TOKEN_SECRET_ID:-n/a}
-- App DB secret name: ${RECEIPT_APP_DB_SECRET_NAME:-n/a}
-- Reused app DB password from existing secret: ${APP_DB_PASSWORD_REUSED_FROM_SECRET:-no}
+## Slack URLs
+- Events/API URL: ${api_url:-n/a}
+- Install URL: ${SYNCBOT_INSTALL_URL:-n/a}
+- OAuth Redirect URL: ${oauth_redirect_url:-n/a}
+- Slack Manifest: ${SLACK_MANIFEST_GENERATED_PATH:-n/a}
+
+## Configuration
+- STACK_NAME=$STACK_NAME
+- DATABASE_ENGINE=${DATABASE_ENGINE:-}
+- DATABASE_SCHEMA=${DATABASE_SCHEMA:-}
+- DATABASE_HOST=${DATABASE_HOST:-}
+- DATABASE_PORT=${DATABASE_PORT:-}
+- DATABASE_USER=${DATABASE_USER:-}
+- DATABASE_TLS_ENABLED=${DATABASE_TLS_ENABLED:-}
+- DATABASE_NETWORK_MODE=${DATABASE_NETWORK_MODE:-}
+- LOG_LEVEL=${LOG_LEVEL:-INFO}
+- REQUIRE_ADMIN=${REQUIRE_ADMIN:-true}
+- SOFT_DELETE_RETENTION_DAYS=${SOFT_DELETE_RETENTION_DAYS:-30}
+- SYNCBOT_FEDERATION_ENABLED=${SYNCBOT_FEDERATION_ENABLED:-false}
+- SYNCBOT_INSTANCE_ID=${SYNCBOT_INSTANCE_ID:-}
+- SYNCBOT_PUBLIC_URL=${SYNCBOT_PUBLIC_URL:-}
+- PRIMARY_WORKSPACE=${PRIMARY_WORKSPACE:-}
+- SLACK_CLIENT_ID=${SLACK_CLIENT_ID:-}
+- ENABLE_XRAY=${ENABLE_XRAY:-false}
+- ENABLE_DB_RESET=${ENABLE_DB_RESET:-false}
+
+## Secrets
+- SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:-}
+- SLACK_CLIENT_SECRET=${SLACK_CLIENT_SECRET:-}
+- DATA_ENCRYPTION_KEY=${DATA_ENCRYPTION_KEY:-}
+- DATABASE_PASSWORD=${DATABASE_PASSWORD:-}
+- DATABASE_ADMIN_PASSWORD=${DATABASE_ADMIN_PASSWORD:-}
 EOF
 
+    if [[ "${VERBOSE:-}" == "true" ]]; then
+      echo ""
+      echo "## SAM Parameters"
+      if [[ ${#PARAMS[@]} -gt 0 ]]; then
+        local p
+        for p in "${PARAMS[@]}"; do
+          echo "- $p"
+        done
+      else
+        echo "(PARAMS array not available)"
+      fi
+      echo ""
+      echo "## Slack Manifest (inline)"
+      if [[ -n "${SLACK_MANIFEST_GENERATED_PATH:-}" && -f "${SLACK_MANIFEST_GENERATED_PATH:-}" ]]; then
+        echo '```json'
+        cat "$SLACK_MANIFEST_GENERATED_PATH"
+        echo '```'
+      else
+        echo "(no manifest file generated)"
+      fi
+    fi
+  } >"$receipt_path"
+
   echo "Deploy receipt written: $receipt_path"
-}
-
-preflight_secrets_manager_access() {
-  local region="$1"
-  local token_secret_id="$2"
-  local app_db_secret_name="$3"
-  local existing_token_secret_arn="${4:-}"
-  local current_secret_id describe_out get_out
-
-  echo
-  echo "=== Secrets Manager Access Preflight ==="
-  echo "Verifying deploy principal can read required SyncBot secrets before SAM deploy..."
-
-  # Validate current principal can read both known secret IDs that this deploy path may use.
-  for current_secret_id in "$token_secret_id" "$app_db_secret_name"; do
-    if [[ -z "$current_secret_id" ]]; then
-      continue
-    fi
-
-    describe_out="$(aws secretsmanager describe-secret \
-      --secret-id "$current_secret_id" \
-      --region "$region" \
-      --query 'ARN' \
-      --output text 2>&1 || true)"
-    if [[ "$describe_out" == *"AccessDenied"* || "$describe_out" == *"not authorized"* ]]; then
-      echo "Secrets Manager preflight failed: missing DescribeSecret on '$current_secret_id'." >&2
-      echo "Fix: re-deploy bootstrap stack to update syncbot deploy policy, then retry." >&2
-      exit 1
-    fi
-
-    get_out="$(aws secretsmanager get-secret-value \
-      --secret-id "$current_secret_id" \
-      --region "$region" \
-      --query 'ARN' \
-      --output text 2>&1 || true)"
-    if [[ "$get_out" == *"AccessDenied"* || "$get_out" == *"not authorized"* ]]; then
-      echo "Secrets Manager preflight failed: missing GetSecretValue on '$current_secret_id'." >&2
-      echo "This commonly breaks CloudFormation when Lambda environment uses dynamic secret references." >&2
-      echo "Fix: re-deploy bootstrap stack to update syncbot deploy policy, then retry." >&2
-      exit 1
-    fi
-  done
-
-  # If explicitly reusing an ARN, validate direct access too.
-  if [[ -n "$existing_token_secret_arn" ]]; then
-    get_out="$(aws secretsmanager get-secret-value \
-      --secret-id "$existing_token_secret_arn" \
-      --region "$region" \
-      --query 'ARN' \
-      --output text 2>&1 || true)"
-    if [[ "$get_out" == *"AccessDenied"* || "$get_out" == *"not authorized"* ]]; then
-      echo "Secrets Manager preflight failed: missing GetSecretValue on '$existing_token_secret_arn'." >&2
-      echo "Fix: re-deploy bootstrap stack to update syncbot deploy policy, then retry." >&2
-      exit 1
-    fi
+  if [[ "${VERBOSE:-}" == "true" ]]; then
+    echo "--- receipt contents ---"
+    cat "$receipt_path"
+    echo "--- end receipt ---"
   fi
-
-  echo "Secrets Manager preflight passed."
 }
 
 rds_lookup_network_defaults() {
@@ -949,7 +967,7 @@ discover_private_lambda_subnets_for_db_vpc() {
   echo "$out"
 }
 
-validate_private_existing_db_connectivity() {
+validate_private_db_connectivity() {
   local region="$1"
   local engine="$2"
   local subnet_csv="$3"
@@ -1260,8 +1278,258 @@ if [[ ! -f "$BOOTSTRAP_TEMPLATE" ]]; then
   exit 1
 fi
 
+# ====================================================================
+# Non-interactive fast path (./deploy.sh --env test|prod aws)
+# ====================================================================
+if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
+  echo "=== SyncBot AWS Deploy (non-interactive) ==="
+  REGION="${AWS_REGION:-us-east-2}"
+  ensure_aws_authenticated
+  BOOTSTRAP_STACK="${BOOTSTRAP_STACK_NAME:-syncbot-bootstrap}"
+
+  if [[ "${BOOTSTRAP:-}" == "true" ]]; then
+    echo "=== Bootstrap ==="
+    BOOTSTRAP_OUTPUTS="$(bootstrap_describe_outputs "$BOOTSTRAP_STACK" "$REGION")"
+    if [[ -z "$BOOTSTRAP_OUTPUTS" ]]; then
+      GITHUB_REPO="${GITHUB_REPOSITORY:-$(cd "$REPO_ROOT" && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo "REPLACE_ME")}"
+      echo "Creating bootstrap stack: $BOOTSTRAP_STACK"
+      aws cloudformation deploy \
+        --template-file "$BOOTSTRAP_TEMPLATE" \
+        --stack-name "$BOOTSTRAP_STACK" \
+        --parameter-overrides \
+          "GitHubRepository=$GITHUB_REPO" \
+          "CreateOIDCProvider=${CREATE_OIDC_PROVIDER:-true}" \
+          "DeploymentBucketPrefix=${DEPLOY_BUCKET_PREFIX:-syncbot-deploy}" \
+        --capabilities CAPABILITY_NAMED_IAM \
+        --region "$REGION" \
+        --no-fail-on-empty-changeset
+    else
+      sync_bootstrap_stack_from_repo "$BOOTSTRAP_STACK" "$REGION"
+    fi
+  fi
+
+  BOOTSTRAP_OUTPUTS="$(bootstrap_describe_outputs "$BOOTSTRAP_STACK" "$REGION")"
+  S3_BUCKET="${DEPLOYMENT_S3_BUCKET:-$(output_value "$BOOTSTRAP_OUTPUTS" "DeploymentBucketName")}"
+  if [[ -z "$S3_BUCKET" ]]; then
+    echo "Error: could not determine S3 deploy bucket. Set DEPLOYMENT_S3_BUCKET in env file or deploy bootstrap first." >&2
+    exit 1
+  fi
+  STACK_NAME="${STACK_NAME:?STACK_NAME required in env file}"
+  STAGE="${STAGE:?STAGE required}"
+
+  handle_unhealthy_stack_state "$STACK_NAME" "$REGION"
+
+  # Backward-compatible aliases: new name primary, EXISTING_ as fallback
+  DATABASE_HOST="${DATABASE_HOST:-${EXISTING_DATABASE_HOST:-}}"
+  DATABASE_PORT="${DATABASE_PORT:-${EXISTING_DATABASE_PORT:-}}"
+  DATABASE_ADMIN_USER="${DATABASE_ADMIN_USER:-${EXISTING_DATABASE_ADMIN_USER:-}}"
+  DATABASE_ADMIN_PASSWORD="${DATABASE_ADMIN_PASSWORD:-${EXISTING_DATABASE_ADMIN_PASSWORD:-}}"
+  DATABASE_NETWORK_MODE="${DATABASE_NETWORK_MODE:-${EXISTING_DATABASE_NETWORK_MODE:-public}}"
+  DATABASE_SUBNET_IDS_CSV="${DATABASE_SUBNET_IDS_CSV:-${EXISTING_DATABASE_SUBNET_IDS_CSV:-}}"
+  DATABASE_LAMBDA_SECURITY_GROUP_ID="${DATABASE_LAMBDA_SECURITY_GROUP_ID:-${EXISTING_DATABASE_LAMBDA_SECURITY_GROUP_ID:-}}"
+  DATABASE_CREATE_APP_USER="${DATABASE_CREATE_APP_USER:-${EXISTING_DATABASE_CREATE_APP_USER:-true}}"
+  DATABASE_CREATE_SCHEMA="${DATABASE_CREATE_SCHEMA:-${EXISTING_DATABASE_CREATE_SCHEMA:-true}}"
+  DATABASE_USERNAME_PREFIX="${DATABASE_USERNAME_PREFIX:-${EXISTING_DATABASE_USERNAME_PREFIX:-}}"
+  DATABASE_APP_USERNAME="${DATABASE_APP_USERNAME:-${EXISTING_DATABASE_APP_USERNAME:-}}"
+  DATABASE_ENGINE="${DATABASE_ENGINE:-mysql}"
+  DATABASE_SCHEMA="${DATABASE_SCHEMA:-syncbot}"
+  DATA_ENCRYPTION_KEY="${DATA_ENCRYPTION_KEY:-${TOKEN_ENCRYPTION_KEY:-}}"
+
+  # Auto-generate DATA_ENCRYPTION_KEY if empty
+  if [[ -z "${DATA_ENCRYPTION_KEY:-}" ]]; then
+    DATA_ENCRYPTION_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(36))')"
+    echo "Generated DATA_ENCRYPTION_KEY=$DATA_ENCRYPTION_KEY"
+    echo "IMPORTANT: Store this key securely. You need it for disaster recovery."
+    if [[ -n "${ENV_FILE_PATH:-}" ]]; then
+      update_env_file "$ENV_FILE_PATH" "DATA_ENCRYPTION_KEY" "$DATA_ENCRYPTION_KEY"
+      echo "  (saved to $ENV_FILE_PATH)"
+    fi
+  fi
+
+  # Auto-generate DATABASE_PASSWORD + derive DATABASE_USER when DbSetup will run
+  if [[ -n "${DATABASE_ADMIN_USER:-}" && -z "${DATABASE_PASSWORD:-}" ]]; then
+    DATABASE_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
+    echo "Generated DATABASE_PASSWORD=$DATABASE_PASSWORD"
+    if [[ -n "${ENV_FILE_PATH:-}" ]]; then
+      update_env_file "$ENV_FILE_PATH" "DATABASE_PASSWORD" "$DATABASE_PASSWORD"
+      echo "  (saved to $ENV_FILE_PATH)"
+    fi
+  fi
+  if [[ -n "${DATABASE_ADMIN_USER:-}" && -z "${DATABASE_USER:-}" ]]; then
+    DATABASE_USER="${DATABASE_USERNAME_PREFIX:+${DATABASE_USERNAME_PREFIX}.}sbapp_${STAGE}"
+    DATABASE_USER="${DATABASE_USER//-/_}"
+    echo "Derived DATABASE_USER=$DATABASE_USER"
+    if [[ -n "${ENV_FILE_PATH:-}" ]]; then
+      update_env_file "$ENV_FILE_PATH" "DATABASE_USER" "$DATABASE_USER"
+      echo "  (saved to $ENV_FILE_PATH)"
+    fi
+  fi
+
+  DATABASE_PASSWORD="${DATABASE_PASSWORD:?DATABASE_PASSWORD required in env file}"
+  DATABASE_USER="${DATABASE_USER:-}"
+
+  PARAMS=(
+    "Stage=$STAGE"
+    "DatabaseEngine=$DATABASE_ENGINE"
+    "SlackSigningSecret=${SLACK_SIGNING_SECRET:?SLACK_SIGNING_SECRET required}"
+    "SlackClientSecret=${SLACK_CLIENT_SECRET:?SLACK_CLIENT_SECRET required}"
+    "SlackClientID=${SLACK_CLIENT_ID:?SLACK_CLIENT_ID required}"
+    "DatabaseSchema=$DATABASE_SCHEMA"
+    "DataEncryptionKey=$DATA_ENCRYPTION_KEY"
+    "DatabasePassword=$DATABASE_PASSWORD"
+    "DatabaseUser=${DATABASE_USER:-}"
+    "LogLevel=${LOG_LEVEL:-INFO}"
+    "RequireAdmin=${REQUIRE_ADMIN:-true}"
+    "SoftDeleteRetentionDays=${SOFT_DELETE_RETENTION_DAYS:-30}"
+    "SyncbotFederationEnabled=${SYNCBOT_FEDERATION_ENABLED:-false}"
+    "SyncbotInstanceId=${SYNCBOT_INSTANCE_ID:-}"
+    "SyncbotPublicUrl=${SYNCBOT_PUBLIC_URL:-}"
+    "PrimaryWorkspace=${PRIMARY_WORKSPACE:-}"
+    "EnableDbReset=${ENABLE_DB_RESET:-}"
+    "DatabaseTlsEnabled=${DATABASE_TLS_ENABLED:-}"
+    "DatabaseSslCaPath=${DATABASE_SSL_CA_PATH:-}"
+    "EnableXRay=${ENABLE_XRAY:-false}"
+    "ExistingDatabaseHost=${DATABASE_HOST:-}"
+    "ExistingDatabaseAdminUser=${DATABASE_ADMIN_USER:-}"
+    "ExistingDatabaseAdminPassword=${DATABASE_ADMIN_PASSWORD:-}"
+    "ExistingDatabaseNetworkMode=${DATABASE_NETWORK_MODE:-public}"
+    "ExistingDatabaseSubnetIdsCsv=${DATABASE_SUBNET_IDS_CSV:-}"
+    "ExistingDatabaseLambdaSecurityGroupId=${DATABASE_LAMBDA_SECURITY_GROUP_ID:-}"
+    "ExistingDatabasePort=${DATABASE_PORT:-}"
+    "ExistingDatabaseCreateAppUser=${DATABASE_CREATE_APP_USER:-true}"
+    "ExistingDatabaseCreateSchema=${DATABASE_CREATE_SCHEMA:-true}"
+    "ExistingDatabaseUsernamePrefix=${DATABASE_USERNAME_PREFIX:-}"
+    "ExistingDatabaseAppUsername=${DATABASE_APP_USERNAME:-}"
+    "DatabaseAdminPassword=${DATABASE_ADMIN_PASSWORD:-}"
+    "SlackOauthBotScopes=${SLACK_BOT_SCOPES:-app_mentions:read,channels:history,channels:join,channels:read,channels:manage,chat:write,chat:write.customize,files:read,files:write,groups:history,groups:read,groups:write,im:write,reactions:read,reactions:write,team:read,users:read,users:read.email}"
+    "SlackOauthUserScopes=${SLACK_USER_SCOPES:-chat:write,channels:history,channels:read,files:read,files:write,groups:history,groups:read,groups:write,im:write,reactions:read,reactions:write,team:read,users:read,users:read.email}"
+    "DatabaseInstanceClass=${DATABASE_INSTANCE_CLASS:-db.t4g.micro}"
+    "DatabaseBackupRetentionDays=${DATABASE_BACKUP_RETENTION_DAYS:-0}"
+    "AllowedDBCidr=${ALLOWED_DB_CIDR:-0.0.0.0/0}"
+    "VpcCidr=${VPC_CIDR:-10.0.0.0/16}"
+  )
+
+  echo "=== SAM Build ==="
+  sam build -t "$APP_TEMPLATE" --use-container
+
+  echo "=== SAM Deploy ==="
+  sam_deploy_or_fallback
+
+  APP_OUTPUTS="$(app_describe_outputs "$STACK_NAME" "$REGION")"
+  FUNCTION_ARN="$(output_value "$APP_OUTPUTS" "SyncBotFunctionArn")"
+  if [[ -n "$FUNCTION_ARN" ]]; then
+    echo "=== Lambda migrate + warm-up ==="
+    TMP_MIGRATE="$(mktemp)"
+    aws lambda invoke \
+      --function-name "$FUNCTION_ARN" \
+      --payload '{"action":"migrate"}' \
+      --cli-binary-format raw-in-base64-out \
+      "$TMP_MIGRATE" \
+      --region "$REGION"
+    cat "$TMP_MIGRATE"
+    echo
+    rm -f "$TMP_MIGRATE"
+  fi
+
+  SYNCBOT_API_URL="$(output_value "$APP_OUTPUTS" "SyncBotApiUrl")"
+  SYNCBOT_INSTALL_URL="$(output_value "$APP_OUTPUTS" "SyncBotInstallUrl")"
+  generate_stage_slack_manifest "$STAGE" "$SYNCBOT_API_URL" "$SYNCBOT_INSTALL_URL"
+
+  if [[ "${SETUP_GITHUB:-}" == "true" ]]; then
+    echo
+    echo "=== Push to GitHub Environment ==="
+    prereqs_require_cmd gh prereqs_hint_gh_cli
+    if ! gh auth status >/dev/null 2>&1; then
+      echo "Error: gh CLI not authenticated. Run 'gh auth login' first." >&2
+      exit 1
+    fi
+    REPO="$(prompt_github_repo_for_actions "$REPO_ROOT")"
+    ENV_NAME="$STAGE"
+    ROLE_ARN="${AWS_ROLE_ARN:-$(output_value "$BOOTSTRAP_OUTPUTS" "GitHubDeployRoleArn")}"
+
+    gh api -X PUT "repos/$REPO/environments/$ENV_NAME" >/dev/null
+    [[ -n "$ROLE_ARN" ]] && gh variable set AWS_ROLE_TO_ASSUME --body "$ROLE_ARN" -R "$REPO"
+    [[ -n "$S3_BUCKET" ]] && gh variable set AWS_S3_BUCKET --body "$S3_BUCKET" -R "$REPO"
+    gh variable set AWS_REGION --body "$REGION" -R "$REPO"
+    gh_variable_set_env AWS_STACK_NAME "$ENV_NAME" "$REPO" "$STACK_NAME"
+    gh_variable_set_env STAGE_NAME "$ENV_NAME" "$REPO" "$STAGE"
+    gh_variable_set_env DATABASE_SCHEMA "$ENV_NAME" "$REPO" "$DATABASE_SCHEMA"
+    gh_variable_set_env DATABASE_ENGINE "$ENV_NAME" "$REPO" "$DATABASE_ENGINE"
+    gh_variable_set_env SLACK_CLIENT_ID "$ENV_NAME" "$REPO" "$SLACK_CLIENT_ID"
+    if [[ -n "$DATABASE_HOST" ]]; then
+      gh_variable_set_env DATABASE_HOST "$ENV_NAME" "$REPO" "$DATABASE_HOST"
+      gh_variable_set_env DATABASE_ADMIN_USER "$ENV_NAME" "$REPO" "${DATABASE_ADMIN_USER:-}"
+      gh_variable_set_env DATABASE_NETWORK_MODE "$ENV_NAME" "$REPO" "${DATABASE_NETWORK_MODE:-public}"
+      if [[ "${DATABASE_NETWORK_MODE:-public}" == "private" ]]; then
+        gh_variable_set_env DATABASE_SUBNET_IDS_CSV "$ENV_NAME" "$REPO" "${DATABASE_SUBNET_IDS_CSV:-}"
+        gh_variable_set_env DATABASE_LAMBDA_SECURITY_GROUP_ID "$ENV_NAME" "$REPO" "${DATABASE_LAMBDA_SG_ID:-${DATABASE_LAMBDA_SECURITY_GROUP_ID:-}}"
+      else
+        gh_variable_set_env DATABASE_SUBNET_IDS_CSV "$ENV_NAME" "$REPO" ""
+        gh_variable_set_env DATABASE_LAMBDA_SECURITY_GROUP_ID "$ENV_NAME" "$REPO" ""
+      fi
+      gh_variable_set_env DATABASE_PORT "$ENV_NAME" "$REPO" "${DATABASE_PORT:-}"
+      gh_variable_set_env DATABASE_CREATE_APP_USER "$ENV_NAME" "$REPO" "${DATABASE_CREATE_APP_USER:-true}"
+      gh_variable_set_env DATABASE_CREATE_SCHEMA "$ENV_NAME" "$REPO" "${DATABASE_CREATE_SCHEMA:-true}"
+      gh_variable_set_env DATABASE_USERNAME_PREFIX "$ENV_NAME" "$REPO" "${DATABASE_USERNAME_PREFIX:-}"
+      gh_variable_set_env DATABASE_APP_USERNAME "$ENV_NAME" "$REPO" "${DATABASE_APP_USERNAME:-}"
+      gh_variable_set_env DATABASE_USER "$ENV_NAME" "$REPO" "${DATABASE_USER:-}"
+    else
+      gh_variable_set_env DATABASE_HOST "$ENV_NAME" "$REPO" ""
+      gh_variable_set_env DATABASE_ADMIN_USER "$ENV_NAME" "$REPO" ""
+      gh_variable_set_env DATABASE_NETWORK_MODE "$ENV_NAME" "$REPO" "public"
+      gh_variable_set_env DATABASE_SUBNET_IDS_CSV "$ENV_NAME" "$REPO" ""
+      gh_variable_set_env DATABASE_LAMBDA_SECURITY_GROUP_ID "$ENV_NAME" "$REPO" ""
+      gh_variable_set_env DATABASE_PORT "$ENV_NAME" "$REPO" ""
+      gh_variable_set_env DATABASE_CREATE_APP_USER "$ENV_NAME" "$REPO" "true"
+      gh_variable_set_env DATABASE_CREATE_SCHEMA "$ENV_NAME" "$REPO" "true"
+      gh_variable_set_env DATABASE_USERNAME_PREFIX "$ENV_NAME" "$REPO" ""
+      gh_variable_set_env DATABASE_APP_USERNAME "$ENV_NAME" "$REPO" ""
+      gh_variable_set_env DATABASE_USER "$ENV_NAME" "$REPO" ""
+    fi
+    echo "Setting GitHub environment secrets for '$ENV_NAME'..."
+    gh secret set SLACK_SIGNING_SECRET --env "$ENV_NAME" --body "$SLACK_SIGNING_SECRET" -R "$REPO"
+    gh secret set SLACK_CLIENT_SECRET --env "$ENV_NAME" --body "$SLACK_CLIENT_SECRET" -R "$REPO"
+    gh secret set DATA_ENCRYPTION_KEY --env "$ENV_NAME" --body "$DATA_ENCRYPTION_KEY" -R "$REPO"
+    gh secret set DATABASE_PASSWORD --env "$ENV_NAME" --body "$DATABASE_PASSWORD" -R "$REPO"
+    [[ -n "${DATABASE_ADMIN_PASSWORD:-}" ]] && gh secret set DATABASE_ADMIN_PASSWORD --env "$ENV_NAME" --body "$DATABASE_ADMIN_PASSWORD" -R "$REPO"
+    echo "GitHub environment '$ENV_NAME' updated for repo $REPO."
+  fi
+
+  echo
+  echo "=== Deploy Receipt ==="
+  write_deploy_receipt
+
+  echo
+  echo "=== Deploy Complete ==="
+  echo "Stack:       $STACK_NAME"
+  echo "Region:      $REGION"
+  echo "API URL:     ${SYNCBOT_API_URL:-n/a}"
+  echo "Install URL: ${SYNCBOT_INSTALL_URL:-n/a}"
+  if [[ -n "${SYNCBOT_API_URL:-}" ]]; then
+    echo "OAuth URL:   ${SYNCBOT_API_URL%/slack/events}/slack/oauth_redirect"
+  fi
+  exit 0
+fi
+
+# ====================================================================
+# Interactive deploy path
+# ====================================================================
 echo "=== SyncBot AWS Deploy ==="
 echo
+
+# Backward-compatible aliases: new name primary, EXISTING_ as fallback (same as non-interactive path)
+DATABASE_HOST="${DATABASE_HOST:-${EXISTING_DATABASE_HOST:-}}"
+DATABASE_PORT="${DATABASE_PORT:-${EXISTING_DATABASE_PORT:-}}"
+DATABASE_ADMIN_USER="${DATABASE_ADMIN_USER:-${EXISTING_DATABASE_ADMIN_USER:-}}"
+DATABASE_ADMIN_PASSWORD="${DATABASE_ADMIN_PASSWORD:-${EXISTING_DATABASE_ADMIN_PASSWORD:-}}"
+DATABASE_NETWORK_MODE="${DATABASE_NETWORK_MODE:-${EXISTING_DATABASE_NETWORK_MODE:-public}}"
+DATABASE_SUBNET_IDS_CSV="${DATABASE_SUBNET_IDS_CSV:-${EXISTING_DATABASE_SUBNET_IDS_CSV:-}}"
+DATABASE_LAMBDA_SECURITY_GROUP_ID="${DATABASE_LAMBDA_SECURITY_GROUP_ID:-${EXISTING_DATABASE_LAMBDA_SECURITY_GROUP_ID:-}}"
+DATABASE_CREATE_APP_USER="${DATABASE_CREATE_APP_USER:-${EXISTING_DATABASE_CREATE_APP_USER:-true}}"
+DATABASE_CREATE_SCHEMA="${DATABASE_CREATE_SCHEMA:-${EXISTING_DATABASE_CREATE_SCHEMA:-true}}"
+DATABASE_USERNAME_PREFIX="${DATABASE_USERNAME_PREFIX:-${EXISTING_DATABASE_USERNAME_PREFIX:-}}"
+DATABASE_APP_USERNAME="${DATABASE_APP_USERNAME:-${EXISTING_DATABASE_APP_USERNAME:-}}"
+DATA_ENCRYPTION_KEY="${DATA_ENCRYPTION_KEY:-${TOKEN_ENCRYPTION_KEY:-}}"
 
 DEFAULT_REGION="${AWS_REGION:-us-east-2}"
 REGION="$(prompt_default "AWS region" "$DEFAULT_REGION")"
@@ -1292,16 +1560,16 @@ STACK_NAME="$(prompt_default "App stack name" "$DEFAULT_STACK")"
 EXISTING_STACK_STATUS="$(stack_status "$STACK_NAME" "$REGION")"
 IS_STACK_UPDATE="false"
 EXISTING_STACK_PARAMS=""
-PREV_EXISTING_DATABASE_HOST=""
-PREV_EXISTING_DATABASE_ADMIN_USER=""
-PREV_EXISTING_DATABASE_NETWORK_MODE=""
-PREV_EXISTING_DATABASE_SUBNET_IDS_CSV=""
-PREV_EXISTING_DATABASE_LAMBDA_SG_ID=""
-PREV_EXISTING_DATABASE_PORT=""
-PREV_EXISTING_DATABASE_CREATE_APP_USER=""
-PREV_EXISTING_DATABASE_CREATE_SCHEMA=""
-PREV_EXISTING_DATABASE_USERNAME_PREFIX=""
-PREV_EXISTING_DATABASE_APP_USERNAME=""
+PREV_DATABASE_HOST=""
+PREV_DATABASE_ADMIN_USER=""
+PREV_DATABASE_NETWORK_MODE=""
+PREV_DATABASE_SUBNET_IDS_CSV=""
+PREV_DATABASE_LAMBDA_SG_ID=""
+PREV_DATABASE_PORT=""
+PREV_DATABASE_CREATE_APP_USER=""
+PREV_DATABASE_CREATE_SCHEMA=""
+PREV_DATABASE_USERNAME_PREFIX=""
+PREV_DATABASE_APP_USERNAME=""
 PREV_DATABASE_ENGINE=""
 PREV_DATABASE_SCHEMA=""
 PREV_LOG_LEVEL=""
@@ -1315,7 +1583,7 @@ PREV_ENABLE_DB_RESET=""
 PREV_DB_TLS=""
 PREV_DB_SSL_CA=""
 PREV_DATABASE_HOST_IN_USE=""
-PREV_STACK_USES_EXISTING_DB="false"
+PREV_STACK_USES_EXTERNAL_DB="false"
 EXISTING_STACK_OUTPUTS=""
 if [[ -n "$EXISTING_STACK_STATUS" && "$EXISTING_STACK_STATUS" != "None" ]]; then
   echo "Detected existing CloudFormation stack: $STACK_NAME ($EXISTING_STACK_STATUS)"
@@ -1325,16 +1593,16 @@ if [[ -n "$EXISTING_STACK_STATUS" && "$EXISTING_STACK_STATUS" != "None" ]]; then
   fi
   IS_STACK_UPDATE="true"
   EXISTING_STACK_PARAMS="$(stack_parameters "$STACK_NAME" "$REGION")"
-  PREV_EXISTING_DATABASE_HOST="$(stack_param_value "$EXISTING_STACK_PARAMS" "ExistingDatabaseHost")"
-  PREV_EXISTING_DATABASE_ADMIN_USER="$(stack_param_value "$EXISTING_STACK_PARAMS" "ExistingDatabaseAdminUser")"
-  PREV_EXISTING_DATABASE_NETWORK_MODE="$(stack_param_value "$EXISTING_STACK_PARAMS" "ExistingDatabaseNetworkMode")"
-  PREV_EXISTING_DATABASE_SUBNET_IDS_CSV="$(stack_param_value "$EXISTING_STACK_PARAMS" "ExistingDatabaseSubnetIdsCsv")"
-  PREV_EXISTING_DATABASE_LAMBDA_SG_ID="$(stack_param_value "$EXISTING_STACK_PARAMS" "ExistingDatabaseLambdaSecurityGroupId")"
-  PREV_EXISTING_DATABASE_PORT="$(stack_param_value "$EXISTING_STACK_PARAMS" "ExistingDatabasePort")"
-  PREV_EXISTING_DATABASE_CREATE_APP_USER="$(stack_param_value "$EXISTING_STACK_PARAMS" "ExistingDatabaseCreateAppUser")"
-  PREV_EXISTING_DATABASE_CREATE_SCHEMA="$(stack_param_value "$EXISTING_STACK_PARAMS" "ExistingDatabaseCreateSchema")"
-  PREV_EXISTING_DATABASE_USERNAME_PREFIX="$(stack_param_value "$EXISTING_STACK_PARAMS" "ExistingDatabaseUsernamePrefix")"
-  PREV_EXISTING_DATABASE_APP_USERNAME="$(stack_param_value "$EXISTING_STACK_PARAMS" "ExistingDatabaseAppUsername")"
+  PREV_DATABASE_HOST="$(stack_param_value "$EXISTING_STACK_PARAMS" "ExistingDatabaseHost")"
+  PREV_DATABASE_ADMIN_USER="$(stack_param_value "$EXISTING_STACK_PARAMS" "ExistingDatabaseAdminUser")"
+  PREV_DATABASE_NETWORK_MODE="$(stack_param_value "$EXISTING_STACK_PARAMS" "ExistingDatabaseNetworkMode")"
+  PREV_DATABASE_SUBNET_IDS_CSV="$(stack_param_value "$EXISTING_STACK_PARAMS" "ExistingDatabaseSubnetIdsCsv")"
+  PREV_DATABASE_LAMBDA_SG_ID="$(stack_param_value "$EXISTING_STACK_PARAMS" "ExistingDatabaseLambdaSecurityGroupId")"
+  PREV_DATABASE_PORT="$(stack_param_value "$EXISTING_STACK_PARAMS" "ExistingDatabasePort")"
+  PREV_DATABASE_CREATE_APP_USER="$(stack_param_value "$EXISTING_STACK_PARAMS" "ExistingDatabaseCreateAppUser")"
+  PREV_DATABASE_CREATE_SCHEMA="$(stack_param_value "$EXISTING_STACK_PARAMS" "ExistingDatabaseCreateSchema")"
+  PREV_DATABASE_USERNAME_PREFIX="$(stack_param_value "$EXISTING_STACK_PARAMS" "ExistingDatabaseUsernamePrefix")"
+  PREV_DATABASE_APP_USERNAME="$(stack_param_value "$EXISTING_STACK_PARAMS" "ExistingDatabaseAppUsername")"
   PREV_DATABASE_ENGINE="$(stack_param_value "$EXISTING_STACK_PARAMS" "DatabaseEngine")"
   PREV_DATABASE_SCHEMA="$(stack_param_value "$EXISTING_STACK_PARAMS" "DatabaseSchema")"
   PREV_LOG_LEVEL="$(stack_param_value "$EXISTING_STACK_PARAMS" "LogLevel")"
@@ -1349,11 +1617,11 @@ if [[ -n "$EXISTING_STACK_STATUS" && "$EXISTING_STACK_STATUS" != "None" ]]; then
   PREV_DB_SSL_CA="$(stack_param_value "$EXISTING_STACK_PARAMS" "DatabaseSslCaPath")"
   EXISTING_STACK_OUTPUTS="$(app_describe_outputs "$STACK_NAME" "$REGION")"
   PREV_DATABASE_HOST_IN_USE="$(output_value "$EXISTING_STACK_OUTPUTS" "DatabaseHostInUse")"
-  if [[ -n "$PREV_EXISTING_DATABASE_HOST" ]]; then
-    PREV_STACK_USES_EXISTING_DB="true"
+  if [[ -n "$PREV_DATABASE_HOST" ]]; then
+    PREV_STACK_USES_EXTERNAL_DB="true"
   fi
-  if [[ -z "$PREV_EXISTING_DATABASE_HOST" && -n "$PREV_DATABASE_HOST_IN_USE" ]]; then
-    PREV_EXISTING_DATABASE_HOST="$PREV_DATABASE_HOST_IN_USE"
+  if [[ -z "$PREV_DATABASE_HOST" && -n "$PREV_DATABASE_HOST_IN_USE" ]]; then
+    PREV_DATABASE_HOST="$PREV_DATABASE_HOST_IN_USE"
   fi
 fi
 
@@ -1401,7 +1669,7 @@ else
 fi
 
 if [[ "$TASK_BUILD_DEPLOY" != "true" ]]; then
-  if [[ "$TASK_CICD" == "true" || "$TASK_SLACK_API" == "true" || "$TASK_BACKUP_SECRETS" == "true" ]]; then
+  if [[ "$TASK_CICD" == "true" || "$TASK_SLACK_API" == "true" ]]; then
     if [[ -z "${EXISTING_STACK_STATUS:-}" || "$EXISTING_STACK_STATUS" == "None" ]]; then
       echo "Error: CloudFormation stack '$STACK_NAME' does not exist in $REGION. Select task 2 (Build/Deploy) first or create the stack." >&2
       exit 1
@@ -1416,12 +1684,12 @@ echo "=== Database Source ==="
 # DB_MODE / GH_DB_MODE: 1 = stack-managed RDS in this template; 2 = external or existing RDS host.
 DB_MODE_DEFAULT="1"
 if [[ "$IS_STACK_UPDATE" == "true" ]]; then
-  if [[ "$PREV_STACK_USES_EXISTING_DB" == "true" ]]; then
-    EXISTING_DB_LABEL="$PREV_EXISTING_DATABASE_HOST"
-    [[ -z "$EXISTING_DB_LABEL" ]] && EXISTING_DB_LABEL="not set"
+  if [[ "$PREV_STACK_USES_EXTERNAL_DB" == "true" ]]; then
+    DB_HOST_LABEL="$PREV_DATABASE_HOST"
+    [[ -z "$DB_HOST_LABEL" ]] && DB_HOST_LABEL="not set"
     DB_MODE_DEFAULT="2"
     echo "  1) Use stack-managed RDS"
-    echo "  2) Use external or existing RDS host: $EXISTING_DB_LABEL (default/current)"
+    echo "  2) Use external or existing RDS host: $DB_HOST_LABEL (default/current)"
   else
     DB_MODE_DEFAULT="1"
     echo "  1) Use stack-managed RDS (default/current)"
@@ -1436,7 +1704,7 @@ if [[ "$DB_MODE" != "1" && "$DB_MODE" != "2" ]]; then
   echo "Error: invalid database mode." >&2
   exit 1
 fi
-if [[ "$IS_STACK_UPDATE" == "true" && "$PREV_STACK_USES_EXISTING_DB" != "true" && "$DB_MODE" == "2" ]]; then
+if [[ "$IS_STACK_UPDATE" == "true" && "$PREV_STACK_USES_EXTERNAL_DB" != "true" && "$DB_MODE" == "2" ]]; then
   echo
   echo "Warning: switching from stack-managed RDS to existing external DB will remove stack-managed RDS/VPC resources."
   if ! prompt_yes_no "Continue with this destructive migration?" "n"; then
@@ -1478,27 +1746,27 @@ SLACK_SIGNING_SECRET="$(required_from_env_or_prompt "SLACK_SIGNING_SECRET" "Slac
 SLACK_CLIENT_SECRET="$(required_from_env_or_prompt "SLACK_CLIENT_SECRET" "SlackClientSecret" "secret")"
 SLACK_CLIENT_ID="$(required_from_env_or_prompt "SLACK_CLIENT_ID" "SlackClientID")"
 
-ENV_EXISTING_DATABASE_HOST="${EXISTING_DATABASE_HOST:-}"
-ENV_EXISTING_DATABASE_ADMIN_USER="${EXISTING_DATABASE_ADMIN_USER:-}"
-ENV_EXISTING_DATABASE_ADMIN_PASSWORD="${EXISTING_DATABASE_ADMIN_PASSWORD:-}"
-ENV_EXISTING_DATABASE_PORT="${EXISTING_DATABASE_PORT:-}"
-ENV_EXISTING_DATABASE_CREATE_APP_USER="${EXISTING_DATABASE_CREATE_APP_USER:-}"
-ENV_EXISTING_DATABASE_CREATE_SCHEMA="${EXISTING_DATABASE_CREATE_SCHEMA:-}"
-ENV_EXISTING_DATABASE_USERNAME_PREFIX="${EXISTING_DATABASE_USERNAME_PREFIX:-}"
-ENV_EXISTING_DATABASE_APP_USERNAME="${EXISTING_DATABASE_APP_USERNAME:-}"
-EXISTING_DB_ADMIN_PASSWORD_SOURCE="prompt"
-EXISTING_DATABASE_HOST=""
-EXISTING_DATABASE_ADMIN_USER=""
-EXISTING_DATABASE_ADMIN_PASSWORD=""
-EXISTING_DATABASE_NETWORK_MODE="public"
-EXISTING_DATABASE_SUBNET_IDS_CSV=""
-EXISTING_DATABASE_LAMBDA_SG_ID=""
-EXISTING_DATABASE_PORT=""
-EXISTING_DATABASE_CREATE_APP_USER="true"
-EXISTING_DATABASE_CREATE_SCHEMA="true"
-EXISTING_DATABASE_USERNAME_PREFIX=""
-EXISTING_DATABASE_APP_USERNAME=""
-EXISTING_DB_EFFECTIVE_PORT=""
+ENV_DATABASE_HOST="${DATABASE_HOST:-}"
+ENV_DATABASE_ADMIN_USER="${DATABASE_ADMIN_USER:-}"
+ENV_DATABASE_ADMIN_PASSWORD="${DATABASE_ADMIN_PASSWORD:-}"
+ENV_DATABASE_PORT="${DATABASE_PORT:-}"
+ENV_DATABASE_CREATE_APP_USER="${DATABASE_CREATE_APP_USER:-}"
+ENV_DATABASE_CREATE_SCHEMA="${DATABASE_CREATE_SCHEMA:-}"
+ENV_DATABASE_USERNAME_PREFIX="${DATABASE_USERNAME_PREFIX:-}"
+ENV_DATABASE_APP_USERNAME="${DATABASE_APP_USERNAME:-}"
+DB_ADMIN_PASSWORD_SOURCE="prompt"
+DATABASE_HOST=""
+DATABASE_ADMIN_USER=""
+DATABASE_ADMIN_PASSWORD=""
+DATABASE_NETWORK_MODE="public"
+DATABASE_SUBNET_IDS_CSV=""
+DATABASE_LAMBDA_SG_ID=""
+DATABASE_PORT=""
+DATABASE_CREATE_APP_USER="true"
+DATABASE_CREATE_SCHEMA="true"
+DATABASE_USERNAME_PREFIX=""
+DATABASE_APP_USERNAME=""
+DB_EFFECTIVE_PORT=""
 DATABASE_SCHEMA=""
 DATABASE_SCHEMA_DEFAULT="syncbot_${STAGE}"
 if [[ "$IS_STACK_UPDATE" == "true" && -n "$PREV_DATABASE_SCHEMA" ]]; then
@@ -1508,118 +1776,104 @@ fi
 if [[ "$DB_MODE" == "2" ]]; then
   echo
   echo "=== Existing Database Host ==="
-  EXISTING_DATABASE_HOST_DEFAULT="REPLACE_ME_RDS_HOST"
-  [[ -n "$PREV_EXISTING_DATABASE_HOST" ]] && EXISTING_DATABASE_HOST_DEFAULT="$PREV_EXISTING_DATABASE_HOST"
-  EXISTING_DATABASE_ADMIN_USER_DEFAULT="admin"
-  [[ -n "$PREV_EXISTING_DATABASE_ADMIN_USER" ]] && EXISTING_DATABASE_ADMIN_USER_DEFAULT="$PREV_EXISTING_DATABASE_ADMIN_USER"
+  DATABASE_HOST_DEFAULT="REPLACE_ME_RDS_HOST"
+  [[ -n "$PREV_DATABASE_HOST" ]] && DATABASE_HOST_DEFAULT="$PREV_DATABASE_HOST"
+  DATABASE_ADMIN_USER_DEFAULT="admin"
+  [[ -n "$PREV_DATABASE_ADMIN_USER" ]] && DATABASE_ADMIN_USER_DEFAULT="$PREV_DATABASE_ADMIN_USER"
 
-  EXISTING_DATABASE_HOST="$(resolve_with_conflict_check \
-    "ExistingDatabaseHost (RDS endpoint hostname)" \
-    "$ENV_EXISTING_DATABASE_HOST" \
-    "$PREV_EXISTING_DATABASE_HOST" \
-    "$EXISTING_DATABASE_HOST_DEFAULT")"
+  DATABASE_HOST="$(resolve_with_conflict_check \
+    "DATABASE_HOST (RDS endpoint hostname)" \
+    "$ENV_DATABASE_HOST" \
+    "$PREV_DATABASE_HOST" \
+    "$DATABASE_HOST_DEFAULT")"
 
   DETECTED_ADMIN_USER=""
-  DETECTED_ADMIN_SECRET_ARN=""
   if [[ "$IS_STACK_UPDATE" == "true" ]]; then
-    RDS_ADMIN_LOOKUP="$(rds_lookup_admin_defaults "$EXISTING_DATABASE_HOST" "$REGION")"
-    if [[ -n "$RDS_ADMIN_LOOKUP" && "$RDS_ADMIN_LOOKUP" != "None" ]]; then
-      IFS=$'\t' read -r DETECTED_ADMIN_USER DETECTED_ADMIN_SECRET_ARN <<< "$RDS_ADMIN_LOOKUP"
-      [[ "$DETECTED_ADMIN_USER" == "None" ]] && DETECTED_ADMIN_USER=""
-      [[ "$DETECTED_ADMIN_SECRET_ARN" == "None" ]] && DETECTED_ADMIN_SECRET_ARN=""
-    fi
+    DETECTED_ADMIN_USER="$(rds_lookup_admin_defaults "$DATABASE_HOST" "$REGION")"
+    [[ "$DETECTED_ADMIN_USER" == "None" ]] && DETECTED_ADMIN_USER=""
   fi
 
-  if [[ -z "$EXISTING_DATABASE_ADMIN_USER_DEFAULT" || "$EXISTING_DATABASE_ADMIN_USER_DEFAULT" == "admin" ]]; then
-    [[ -n "$DETECTED_ADMIN_USER" ]] && EXISTING_DATABASE_ADMIN_USER_DEFAULT="$DETECTED_ADMIN_USER"
+  if [[ -z "$DATABASE_ADMIN_USER_DEFAULT" || "$DATABASE_ADMIN_USER_DEFAULT" == "admin" ]]; then
+    [[ -n "$DETECTED_ADMIN_USER" ]] && DATABASE_ADMIN_USER_DEFAULT="$DETECTED_ADMIN_USER"
   fi
-  EXISTING_DATABASE_ADMIN_USER="$(resolve_with_conflict_check \
-    "ExistingDatabaseAdminUser" \
-    "$ENV_EXISTING_DATABASE_ADMIN_USER" \
-    "$PREV_EXISTING_DATABASE_ADMIN_USER" \
-    "$EXISTING_DATABASE_ADMIN_USER_DEFAULT")"
+  DATABASE_ADMIN_USER="$(resolve_with_conflict_check \
+    "DATABASE_ADMIN_USER" \
+    "$ENV_DATABASE_ADMIN_USER" \
+    "$PREV_DATABASE_ADMIN_USER" \
+    "$DATABASE_ADMIN_USER_DEFAULT")"
 
-  if [[ -n "$ENV_EXISTING_DATABASE_ADMIN_PASSWORD" ]]; then
-    echo "Using ExistingDatabaseAdminPassword from environment variable EXISTING_DATABASE_ADMIN_PASSWORD."
-    EXISTING_DATABASE_ADMIN_PASSWORD="$ENV_EXISTING_DATABASE_ADMIN_PASSWORD"
-    EXISTING_DB_ADMIN_PASSWORD_SOURCE="env:EXISTING_DATABASE_ADMIN_PASSWORD"
+  if [[ -n "$ENV_DATABASE_ADMIN_PASSWORD" ]]; then
+    echo "Using DATABASE_ADMIN_PASSWORD from environment variable."
+    DATABASE_ADMIN_PASSWORD="$ENV_DATABASE_ADMIN_PASSWORD"
   else
-    if [[ "$IS_STACK_UPDATE" == "true" && -n "$DETECTED_ADMIN_SECRET_ARN" ]]; then
-      EXISTING_DATABASE_ADMIN_PASSWORD="$(secret_password_by_id "$DETECTED_ADMIN_SECRET_ARN" "$REGION" 2>/dev/null || true)"
-      if [[ -n "$EXISTING_DATABASE_ADMIN_PASSWORD" ]]; then
-        echo "Detected existing DB admin password from AWS Secrets Manager for re-deploy."
-        EXISTING_DB_ADMIN_PASSWORD_SOURCE="aws-secret:$DETECTED_ADMIN_SECRET_ARN"
-      fi
-    fi
-    if [[ -z "$EXISTING_DATABASE_ADMIN_PASSWORD" ]]; then
-      echo "Existing DB admin credentials couldn't be auto-detected. Please enter them manually."
-      EXISTING_DATABASE_ADMIN_PASSWORD="$(prompt_secret_required "ExistingDatabaseAdminPassword")"
-      EXISTING_DB_ADMIN_PASSWORD_SOURCE="prompt"
-    fi
+    DATABASE_ADMIN_PASSWORD="$(prompt_secret_required "DATABASE_ADMIN_PASSWORD")"
   fi
 
+  echo
+  echo "Database name (DatabaseSchema): use syncbot_${STAGE} or similar so each stage has its own DB on a shared host"
+  echo "(e.g. syncbot_test, syncbot_prod). The default below includes the stage you chose."
   DATABASE_SCHEMA="$(prompt_default "DatabaseSchema" "$DATABASE_SCHEMA_DEFAULT")"
 
   echo
   echo "=== Existing database port and setup ==="
   echo "Leave port blank to use the engine default (3306 MySQL, 5432 PostgreSQL)."
-  DEFAULT_EXISTING_DB_PORT=""
-  [[ -n "$PREV_EXISTING_DATABASE_PORT" ]] && DEFAULT_EXISTING_DB_PORT="$PREV_EXISTING_DATABASE_PORT"
-  EXISTING_DATABASE_PORT="$(resolve_with_conflict_check \
-    "ExistingDatabasePort (optional)" \
-    "$ENV_EXISTING_DATABASE_PORT" \
-    "$PREV_EXISTING_DATABASE_PORT" \
-    "$DEFAULT_EXISTING_DB_PORT")"
-  if [[ "$DATABASE_ENGINE" == "mysql" && "$EXISTING_DATABASE_PORT" == "3306" ]]; then
-    EXISTING_DATABASE_PORT=""
+  DEFAULT_DB_PORT=""
+  [[ -n "$PREV_DATABASE_PORT" ]] && DEFAULT_DB_PORT="$PREV_DATABASE_PORT"
+  DATABASE_PORT="$(resolve_with_conflict_check \
+    "DATABASE_PORT (optional)" \
+    "$ENV_DATABASE_PORT" \
+    "$PREV_DATABASE_PORT" \
+    "$DEFAULT_DB_PORT")"
+  if [[ "$DATABASE_ENGINE" == "mysql" && "$DATABASE_PORT" == "3306" ]]; then
+    DATABASE_PORT=""
   fi
-  if [[ "$DATABASE_ENGINE" == "postgresql" && "$EXISTING_DATABASE_PORT" == "5432" ]]; then
-    EXISTING_DATABASE_PORT=""
+  if [[ "$DATABASE_ENGINE" == "postgresql" && "$DATABASE_PORT" == "5432" ]]; then
+    DATABASE_PORT=""
   fi
-  EXISTING_DB_EFFECTIVE_PORT="3306"
-  [[ "$DATABASE_ENGINE" == "postgresql" ]] && EXISTING_DB_EFFECTIVE_PORT="5432"
-  [[ -n "$EXISTING_DATABASE_PORT" ]] && EXISTING_DB_EFFECTIVE_PORT="$EXISTING_DATABASE_PORT"
+  DB_EFFECTIVE_PORT="3306"
+  [[ "$DATABASE_ENGINE" == "postgresql" ]] && DB_EFFECTIVE_PORT="5432"
+  [[ -n "$DATABASE_PORT" ]] && DB_EFFECTIVE_PORT="$DATABASE_PORT"
 
   CREATE_APP_DEFAULT="y"
-  [[ "${PREV_EXISTING_DATABASE_CREATE_APP_USER:-}" == "false" ]] && CREATE_APP_DEFAULT="n"
-  EXISTING_DATABASE_CREATE_APP_USER="$(resolve_with_conflict_check \
+  [[ "${PREV_DATABASE_CREATE_APP_USER:-}" == "false" ]] && CREATE_APP_DEFAULT="n"
+  DATABASE_CREATE_APP_USER="$(resolve_with_conflict_check \
     "Create dedicated app DB user (CREATE USER / grants)?" \
-    "$ENV_EXISTING_DATABASE_CREATE_APP_USER" \
-    "${PREV_EXISTING_DATABASE_CREATE_APP_USER:-}" \
+    "$ENV_DATABASE_CREATE_APP_USER" \
+    "${PREV_DATABASE_CREATE_APP_USER:-}" \
     "$CREATE_APP_DEFAULT" \
     bool)"
 
   CREATE_SCHEMA_DEFAULT="y"
-  [[ "${PREV_EXISTING_DATABASE_CREATE_SCHEMA:-}" == "false" ]] && CREATE_SCHEMA_DEFAULT="n"
-  EXISTING_DATABASE_CREATE_SCHEMA="$(resolve_with_conflict_check \
+  [[ "${PREV_DATABASE_CREATE_SCHEMA:-}" == "false" ]] && CREATE_SCHEMA_DEFAULT="n"
+  DATABASE_CREATE_SCHEMA="$(resolve_with_conflict_check \
     "Run CREATE DATABASE IF NOT EXISTS for DatabaseSchema?" \
-    "$ENV_EXISTING_DATABASE_CREATE_SCHEMA" \
-    "${PREV_EXISTING_DATABASE_CREATE_SCHEMA:-}" \
+    "$ENV_DATABASE_CREATE_SCHEMA" \
+    "${PREV_DATABASE_CREATE_SCHEMA:-}" \
     "$CREATE_SCHEMA_DEFAULT" \
     bool)"
 
-  EXISTING_DATABASE_USERNAME_PREFIX_DEFAULT=""
-  [[ -n "$PREV_EXISTING_DATABASE_USERNAME_PREFIX" ]] && EXISTING_DATABASE_USERNAME_PREFIX_DEFAULT="$PREV_EXISTING_DATABASE_USERNAME_PREFIX"
-  EXISTING_DATABASE_USERNAME_PREFIX="$(resolve_with_conflict_check \
+  DATABASE_USERNAME_PREFIX_DEFAULT=""
+  [[ -n "$PREV_DATABASE_USERNAME_PREFIX" ]] && DATABASE_USERNAME_PREFIX_DEFAULT="$PREV_DATABASE_USERNAME_PREFIX"
+  DATABASE_USERNAME_PREFIX="$(resolve_with_conflict_check \
     "DB username prefix (e.g. abc123 for TiDB Cloud; blank for RDS/standard)" \
-    "$ENV_EXISTING_DATABASE_USERNAME_PREFIX" \
-    "$PREV_EXISTING_DATABASE_USERNAME_PREFIX" \
-    "$EXISTING_DATABASE_USERNAME_PREFIX_DEFAULT")"
+    "$ENV_DATABASE_USERNAME_PREFIX" \
+    "$PREV_DATABASE_USERNAME_PREFIX" \
+    "$DATABASE_USERNAME_PREFIX_DEFAULT")"
 
-  EXISTING_DATABASE_APP_USERNAME_DEFAULT=""
-  [[ -n "$PREV_EXISTING_DATABASE_APP_USERNAME" ]] && EXISTING_DATABASE_APP_USERNAME_DEFAULT="$PREV_EXISTING_DATABASE_APP_USERNAME"
-  EXISTING_DATABASE_APP_USERNAME="$(resolve_with_conflict_check \
-    "ExistingDatabaseAppUsername (optional; full app user, bypasses prefix+sbapp_{stage}; blank for default)" \
-    "$ENV_EXISTING_DATABASE_APP_USERNAME" \
-    "$PREV_EXISTING_DATABASE_APP_USERNAME" \
-    "$EXISTING_DATABASE_APP_USERNAME_DEFAULT")"
+  DATABASE_APP_USERNAME_DEFAULT=""
+  [[ -n "$PREV_DATABASE_APP_USERNAME" ]] && DATABASE_APP_USERNAME_DEFAULT="$PREV_DATABASE_APP_USERNAME"
+  DATABASE_APP_USERNAME="$(resolve_with_conflict_check \
+    "DATABASE_APP_USERNAME (optional; full app user, bypasses prefix+sbapp_{stage}; blank for default)" \
+    "$ENV_DATABASE_APP_USERNAME" \
+    "$PREV_DATABASE_APP_USERNAME" \
+    "$DATABASE_APP_USERNAME_DEFAULT")"
 
-  if [[ -z "$EXISTING_DATABASE_HOST" || "$EXISTING_DATABASE_HOST" == REPLACE_ME* ]]; then
-    echo "Error: valid ExistingDatabaseHost is required for existing DB mode." >&2
+  if [[ -z "$DATABASE_HOST" || "$DATABASE_HOST" == REPLACE_ME* ]]; then
+    echo "Error: valid DATABASE_HOST is required for external DB mode." >&2
     exit 1
   fi
 
-  RDS_LOOKUP="$(rds_lookup_network_defaults "$EXISTING_DATABASE_HOST" "$REGION")"
+  RDS_LOOKUP="$(rds_lookup_network_defaults "$DATABASE_HOST" "$REGION")"
   DETECTED_PUBLIC=""
   DETECTED_SUBNETS=""
   DETECTED_SGS=""
@@ -1643,20 +1897,20 @@ if [[ "$DB_MODE" == "2" ]]; then
     echo "You can still continue by entering network values manually."
   fi
 
-  DEFAULT_EXISTING_DB_NETWORK_MODE="public"
-  if [[ -n "$PREV_EXISTING_DATABASE_NETWORK_MODE" ]]; then
-    DEFAULT_EXISTING_DB_NETWORK_MODE="$PREV_EXISTING_DATABASE_NETWORK_MODE"
+  DEFAULT_DB_NETWORK_MODE="public"
+  if [[ -n "$PREV_DATABASE_NETWORK_MODE" ]]; then
+    DEFAULT_DB_NETWORK_MODE="$PREV_DATABASE_NETWORK_MODE"
   fi
   if [[ "$DETECTED_PUBLIC" == "False" ]]; then
-    DEFAULT_EXISTING_DB_NETWORK_MODE="private"
+    DEFAULT_DB_NETWORK_MODE="private"
   fi
-  EXISTING_DATABASE_NETWORK_MODE="$(prompt_default "Existing DB network mode (public/private)" "$DEFAULT_EXISTING_DB_NETWORK_MODE")"
-  if [[ "$EXISTING_DATABASE_NETWORK_MODE" != "public" && "$EXISTING_DATABASE_NETWORK_MODE" != "private" ]]; then
+  DATABASE_NETWORK_MODE="$(prompt_default "Existing DB network mode (public/private)" "$DEFAULT_DB_NETWORK_MODE")"
+  if [[ "$DATABASE_NETWORK_MODE" != "public" && "$DATABASE_NETWORK_MODE" != "private" ]]; then
     echo "Error: existing DB network mode must be 'public' or 'private'." >&2
     exit 1
   fi
 
-  if [[ "$EXISTING_DATABASE_NETWORK_MODE" == "private" ]]; then
+  if [[ "$DATABASE_NETWORK_MODE" == "private" ]]; then
     AUTO_PRIVATE_SUBNETS=""
     if [[ -n "$DETECTED_VPC" ]]; then
       AUTO_PRIVATE_SUBNETS="$(discover_private_lambda_subnets_for_db_vpc "$DETECTED_VPC" "$REGION")"
@@ -1666,39 +1920,39 @@ if [[ "$DB_MODE" == "2" ]]; then
     fi
 
     DEFAULT_SUBNETS="$AUTO_PRIVATE_SUBNETS"
-    [[ -z "$DEFAULT_SUBNETS" && -n "$PREV_EXISTING_DATABASE_SUBNET_IDS_CSV" ]] && DEFAULT_SUBNETS="$PREV_EXISTING_DATABASE_SUBNET_IDS_CSV"
+    [[ -z "$DEFAULT_SUBNETS" && -n "$PREV_DATABASE_SUBNET_IDS_CSV" ]] && DEFAULT_SUBNETS="$PREV_DATABASE_SUBNET_IDS_CSV"
     [[ -z "$DEFAULT_SUBNETS" ]] && DEFAULT_SUBNETS="$DETECTED_SUBNETS"
     [[ -z "$DEFAULT_SUBNETS" ]] && DEFAULT_SUBNETS="REPLACE_ME_SUBNET_1,REPLACE_ME_SUBNET_2"
     DEFAULT_SG="${DETECTED_SGS%%,*}"
-    [[ -n "$PREV_EXISTING_DATABASE_LAMBDA_SG_ID" ]] && DEFAULT_SG="$PREV_EXISTING_DATABASE_LAMBDA_SG_ID"
+    [[ -n "$PREV_DATABASE_LAMBDA_SG_ID" ]] && DEFAULT_SG="$PREV_DATABASE_LAMBDA_SG_ID"
     [[ -z "$DEFAULT_SG" ]] && DEFAULT_SG="REPLACE_ME_LAMBDA_SG_ID"
 
     echo
     echo "Private DB mode selected: Lambdas will run in VPC."
     echo "Note: app Lambda needs Internet egress (usually NAT) to call Slack APIs."
-    EXISTING_DATABASE_SUBNET_IDS_CSV="$(prompt_default "ExistingDatabaseSubnetIdsCsv (comma-separated)" "$DEFAULT_SUBNETS")"
-    EXISTING_DATABASE_LAMBDA_SG_ID="$(prompt_default "ExistingDatabaseLambdaSecurityGroupId" "$DEFAULT_SG")"
+    DATABASE_SUBNET_IDS_CSV="$(prompt_default "DATABASE_SUBNET_IDS_CSV (comma-separated)" "$DEFAULT_SUBNETS")"
+    DATABASE_LAMBDA_SG_ID="$(prompt_default "DATABASE_LAMBDA_SECURITY_GROUP_ID" "$DEFAULT_SG")"
 
-    if [[ -z "$EXISTING_DATABASE_SUBNET_IDS_CSV" || "$EXISTING_DATABASE_SUBNET_IDS_CSV" == REPLACE_ME* ]]; then
-      echo "Error: valid ExistingDatabaseSubnetIdsCsv is required for private mode." >&2
+    if [[ -z "$DATABASE_SUBNET_IDS_CSV" || "$DATABASE_SUBNET_IDS_CSV" == REPLACE_ME* ]]; then
+      echo "Error: valid DATABASE_SUBNET_IDS_CSV is required for private mode." >&2
       exit 1
     fi
-    if [[ -z "$EXISTING_DATABASE_LAMBDA_SG_ID" || "$EXISTING_DATABASE_LAMBDA_SG_ID" == REPLACE_ME* ]]; then
-      echo "Error: valid ExistingDatabaseLambdaSecurityGroupId is required for private mode." >&2
+    if [[ -z "$DATABASE_LAMBDA_SG_ID" || "$DATABASE_LAMBDA_SG_ID" == REPLACE_ME* ]]; then
+      echo "Error: valid DATABASE_LAMBDA_SECURITY_GROUP_ID is required for private mode." >&2
       exit 1
     fi
 
     echo
     echo "Running private-connectivity preflight checks..."
-    if ! validate_private_existing_db_connectivity \
+    if ! validate_private_db_connectivity \
       "$REGION" \
       "$DATABASE_ENGINE" \
-      "$EXISTING_DATABASE_SUBNET_IDS_CSV" \
-      "$EXISTING_DATABASE_LAMBDA_SG_ID" \
+      "$DATABASE_SUBNET_IDS_CSV" \
+      "$DATABASE_LAMBDA_SG_ID" \
       "$DETECTED_VPC" \
       "$DETECTED_SGS" \
-      "$EXISTING_DATABASE_HOST" \
-      "$EXISTING_DB_EFFECTIVE_PORT"; then
+      "$DATABASE_HOST" \
+      "$DB_EFFECTIVE_PORT"; then
       echo "Fix network settings and rerun deploy." >&2
       exit 1
     fi
@@ -1707,23 +1961,38 @@ else
   echo
   echo "=== New RDS Database ==="
   echo "New RDS mode uses:"
-  echo "  - admin user: sbadmin_${STAGE} (password auto-generated)"
-  echo "  - app user:   sbapp_${STAGE} (password auto-generated)"
+  echo "  - admin user: sbadmin_${STAGE}"
+  echo
+  echo "Database name (DatabaseSchema): use syncbot_${STAGE} or similar so each stage has its own DB on a shared host"
+  echo "(e.g. syncbot_test, syncbot_prod). The default below includes the stage you chose."
   DATABASE_SCHEMA="$(prompt_default "DatabaseSchema" "$DATABASE_SCHEMA_DEFAULT")"
+  echo "Admin password for new RDS instance:"
+  DATABASE_ADMIN_PASSWORD="$(required_from_env_or_prompt "DATABASE_ADMIN_PASSWORD" "DatabaseAdminPassword" "secret")"
 fi
 
-TOKEN_OVERRIDE="$(prompt_default "TokenEncryptionKeyOverride (optional for disaster recovery; leave blank for normal deploy)" "")"
-EXISTING_TOKEN_SECRET_ARN=""
-TOKEN_SECRET_NAME="syncbot-${STAGE}-token-encryption-key"
-APP_DB_SECRET_NAME="syncbot-${STAGE}-app-db-password"
-if [[ -z "$TOKEN_OVERRIDE" ]]; then
-  DETECTED_TOKEN_SECRET_ARN="$(secret_arn_by_name "$TOKEN_SECRET_NAME" "$REGION")"
-  if [[ -n "$DETECTED_TOKEN_SECRET_ARN" && "$DETECTED_TOKEN_SECRET_ARN" != "None" ]]; then
-    echo "Detected existing token secret: $TOKEN_SECRET_NAME"
-    if prompt_yes_no "Reuse detected secret ARN for this deploy?" "y"; then
-      EXISTING_TOKEN_SECRET_ARN="$DETECTED_TOKEN_SECRET_ARN"
-    fi
-  fi
+echo
+echo "=== App Secrets ==="
+
+if [[ -z "${DATA_ENCRYPTION_KEY:-}" ]]; then
+  DATA_ENCRYPTION_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(36))')"
+  echo "Generated DATA_ENCRYPTION_KEY=$DATA_ENCRYPTION_KEY"
+  echo "IMPORTANT: Store this key securely. You need it for disaster recovery."
+fi
+DATA_ENCRYPTION_KEY="$(required_from_env_or_prompt "DATA_ENCRYPTION_KEY" "DataEncryptionKey" "secret")"
+
+if [[ -n "${DATABASE_ADMIN_USER:-}" && -z "${DATABASE_PASSWORD:-}" ]]; then
+  DATABASE_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
+  echo "Generated DATABASE_PASSWORD=$DATABASE_PASSWORD"
+fi
+DATABASE_PASSWORD="$(required_from_env_or_prompt "DATABASE_PASSWORD" "DatabasePassword" "secret")"
+
+DATABASE_USER=""
+if [[ "$DB_MODE" == "2" && -z "${DATABASE_ADMIN_USER:-}" ]]; then
+  DATABASE_USER="$(required_from_env_or_prompt "DATABASE_USER" "DatabaseUser (pre-existing app DB user)")"
+elif [[ -n "${DATABASE_ADMIN_USER:-}" && -z "${DATABASE_USER:-}" ]]; then
+  DATABASE_USER="${DATABASE_USERNAME_PREFIX:+${DATABASE_USERNAME_PREFIX}.}sbapp_${STAGE}"
+  DATABASE_USER="${DATABASE_USER//-/_}"
+  echo "Derived DATABASE_USER=$DATABASE_USER"
 fi
 
 LOG_LEVEL_DEFAULT="INFO"
@@ -1783,34 +2052,34 @@ echo "Deploy bucket:    $S3_BUCKET"
 if [[ "$DB_MODE" == "2" ]]; then
   echo "DB mode:          existing host"
   echo "DB engine:        $DATABASE_ENGINE"
-  echo "DB host:          $EXISTING_DATABASE_HOST"
-  echo "DB network:       $EXISTING_DATABASE_NETWORK_MODE"
-  if [[ "$EXISTING_DATABASE_NETWORK_MODE" == "private" ]]; then
-    echo "DB subnets:       $EXISTING_DATABASE_SUBNET_IDS_CSV"
-    echo "Lambda SG:        $EXISTING_DATABASE_LAMBDA_SG_ID"
+  echo "DB host:          $DATABASE_HOST"
+  echo "DB network:       $DATABASE_NETWORK_MODE"
+  if [[ "$DATABASE_NETWORK_MODE" == "private" ]]; then
+    echo "DB subnets:       $DATABASE_SUBNET_IDS_CSV"
+    echo "Lambda SG:        $DATABASE_LAMBDA_SG_ID"
   fi
-  echo "DB port:          ${EXISTING_DB_EFFECTIVE_PORT:-engine default}"
-  echo "DB create user:   $EXISTING_DATABASE_CREATE_APP_USER"
-  echo "DB create schema: $EXISTING_DATABASE_CREATE_SCHEMA"
-  echo "DB admin user (parameter): $EXISTING_DATABASE_ADMIN_USER"
-  if [[ -n "$EXISTING_DATABASE_APP_USERNAME" ]]; then
-    echo "DB app username override: $EXISTING_DATABASE_APP_USERNAME"
+  echo "DB port:          ${DB_EFFECTIVE_PORT:-engine default}"
+  echo "DB create user:   $DATABASE_CREATE_APP_USER"
+  echo "DB create schema: $DATABASE_CREATE_SCHEMA"
+  echo "DB admin user (parameter): $DATABASE_ADMIN_USER"
+  if [[ -n "$DATABASE_APP_USERNAME" ]]; then
+    echo "DB app username override: $DATABASE_APP_USERNAME"
   fi
-  if [[ -n "$EXISTING_DATABASE_USERNAME_PREFIX" ]]; then
-    _dbpfx="$EXISTING_DATABASE_USERNAME_PREFIX"
+  if [[ -n "$DATABASE_USERNAME_PREFIX" ]]; then
+    _dbpfx="$DATABASE_USERNAME_PREFIX"
     [[ "$_dbpfx" != *. ]] && _dbpfx="${_dbpfx}."
-    echo "DB username prefix: $EXISTING_DATABASE_USERNAME_PREFIX"
-    echo "  effective admin (bootstrap): ${_dbpfx}${EXISTING_DATABASE_ADMIN_USER}"
-    if [[ -n "$EXISTING_DATABASE_APP_USERNAME" ]]; then
-      echo "  effective app user (if created): $EXISTING_DATABASE_APP_USERNAME (override)"
+    echo "DB username prefix: $DATABASE_USERNAME_PREFIX"
+    echo "  effective admin (bootstrap): ${_dbpfx}${DATABASE_ADMIN_USER}"
+    if [[ -n "$DATABASE_APP_USERNAME" ]]; then
+      echo "  effective app user (if created): $DATABASE_APP_USERNAME (override)"
     else
       echo "  effective app user (if created): ${_dbpfx}sbapp_${STAGE//-/_}"
     fi
   else
     echo "DB username prefix: (none)"
-    echo "  admin (bootstrap): $EXISTING_DATABASE_ADMIN_USER"
-    if [[ -n "$EXISTING_DATABASE_APP_USERNAME" ]]; then
-      echo "  app user (if created): $EXISTING_DATABASE_APP_USERNAME (override)"
+    echo "  admin (bootstrap): $DATABASE_ADMIN_USER"
+    if [[ -n "$DATABASE_APP_USERNAME" ]]; then
+      echo "  app user (if created): $DATABASE_APP_USERNAME (override)"
     else
       echo "  app user (if created): sbapp_${STAGE//-/_}"
     fi
@@ -1823,16 +2092,10 @@ else
   echo "DB app user:      sbapp_${STAGE} (auto password)"
   echo "DB schema:        $DATABASE_SCHEMA"
 fi
-if [[ -n "$TOKEN_OVERRIDE" ]]; then
-  echo "DR key override:  YES (TokenEncryptionKeyOverride)"
-else
-  echo "DR key override:  NO (auto-generated TOKEN_ENCRYPTION_KEY)"
-  if [[ -n "$EXISTING_TOKEN_SECRET_ARN" ]]; then
-    echo "Token secret:     Reusing existing secret ARN"
-  fi
-fi
-if [[ -n "$APP_DB_PASSWORD_OVERRIDE" ]]; then
-  echo "App DB secret:    Reusing prior app DB password value"
+echo "Token encryption: provided (NoEcho SAM parameter)"
+echo "Database password: provided (NoEcho SAM parameter)"
+if [[ -n "${DATABASE_USER:-}" ]]; then
+  echo "Database user:    $DATABASE_USER (direct — DbSetup skipped)"
 fi
 echo
 
@@ -1843,16 +2106,9 @@ fi
 
 echo
 echo "=== Preflight ==="
-preflight_secrets_manager_access "$REGION" "$TOKEN_SECRET_NAME" "$APP_DB_SECRET_NAME" "$EXISTING_TOKEN_SECRET_ARN"
-
-handle_orphan_app_db_secret_on_create "$EXISTING_STACK_STATUS" "$APP_DB_SECRET_NAME" "$REGION"
-
 handle_unhealthy_stack_state "$STACK_NAME" "$REGION"
 
 echo
-echo "=== SAM Build ==="
-echo "Building app..."
-sam build -t "$APP_TEMPLATE" --use-container
 
 PARAMS=(
   "Stage=$STAGE"
@@ -1860,12 +2116,14 @@ PARAMS=(
   "SlackSigningSecret=$SLACK_SIGNING_SECRET"
   "SlackClientSecret=$SLACK_CLIENT_SECRET"
   "DatabaseSchema=$DATABASE_SCHEMA"
+  "DataEncryptionKey=$DATA_ENCRYPTION_KEY"
+  "DatabasePassword=$DATABASE_PASSWORD"
   "LogLevel=$LOG_LEVEL"
   "RequireAdmin=$REQUIRE_ADMIN"
   "SoftDeleteRetentionDays=$SOFT_DELETE_RETENTION_DAYS"
   "SyncbotFederationEnabled=$SYNCBOT_FEDERATION_ENABLED"
 )
-# SAM rejects Key= (empty value) in shorthand format; only include when non-empty.
+[[ -n "${DATABASE_USER:-}" ]] && PARAMS+=("DatabaseUser=$DATABASE_USER")
 [[ -n "$SYNCBOT_INSTANCE_ID" ]] && PARAMS+=("SyncbotInstanceId=$SYNCBOT_INSTANCE_ID")
 [[ -n "$SYNCBOT_PUBLIC_URL" ]] && PARAMS+=("SyncbotPublicUrl=$SYNCBOT_PUBLIC_URL")
 [[ -n "$PRIMARY_WORKSPACE" ]] && PARAMS+=("PrimaryWorkspace=$PRIMARY_WORKSPACE")
@@ -1879,62 +2137,57 @@ fi
 
 if [[ "$DB_MODE" == "2" ]]; then
   PARAMS+=(
-    "ExistingDatabaseHost=$EXISTING_DATABASE_HOST"
-    "ExistingDatabaseAdminUser=$EXISTING_DATABASE_ADMIN_USER"
-    "ExistingDatabaseAdminPassword=$EXISTING_DATABASE_ADMIN_PASSWORD"
-    "ExistingDatabaseNetworkMode=$EXISTING_DATABASE_NETWORK_MODE"
+    "ExistingDatabaseHost=$DATABASE_HOST"
+    "ExistingDatabaseNetworkMode=$DATABASE_NETWORK_MODE"
   )
-  if [[ "$EXISTING_DATABASE_NETWORK_MODE" == "private" ]]; then
+  [[ -n "${DATABASE_ADMIN_USER:-}" ]] && PARAMS+=("ExistingDatabaseAdminUser=$DATABASE_ADMIN_USER")
+  [[ -n "${DATABASE_ADMIN_PASSWORD:-}" ]] && PARAMS+=("ExistingDatabaseAdminPassword=$DATABASE_ADMIN_PASSWORD")
+  if [[ "$DATABASE_NETWORK_MODE" == "private" ]]; then
     PARAMS+=(
-      "ExistingDatabaseSubnetIdsCsv=$EXISTING_DATABASE_SUBNET_IDS_CSV"
-      "ExistingDatabaseLambdaSecurityGroupId=$EXISTING_DATABASE_LAMBDA_SG_ID"
+      "ExistingDatabaseSubnetIdsCsv=$DATABASE_SUBNET_IDS_CSV"
+      "ExistingDatabaseLambdaSecurityGroupId=$DATABASE_LAMBDA_SG_ID"
     )
   fi
-  [[ -n "$EXISTING_DATABASE_PORT" ]] && PARAMS+=("ExistingDatabasePort=$EXISTING_DATABASE_PORT")
+  [[ -n "$DATABASE_PORT" ]] && PARAMS+=("ExistingDatabasePort=$DATABASE_PORT")
   PARAMS+=(
-    "ExistingDatabaseCreateAppUser=$EXISTING_DATABASE_CREATE_APP_USER"
-    "ExistingDatabaseCreateSchema=$EXISTING_DATABASE_CREATE_SCHEMA"
-    "ExistingDatabaseUsernamePrefix=$EXISTING_DATABASE_USERNAME_PREFIX"
-    "ExistingDatabaseAppUsername=$EXISTING_DATABASE_APP_USERNAME"
+    "ExistingDatabaseCreateAppUser=$DATABASE_CREATE_APP_USER"
+    "ExistingDatabaseCreateSchema=$DATABASE_CREATE_SCHEMA"
+    "ExistingDatabaseUsernamePrefix=$DATABASE_USERNAME_PREFIX"
+    "ExistingDatabaseAppUsername=$DATABASE_APP_USERNAME"
   )
 else
-  # Clear existing-host parameters on updates to avoid stale previous values.
-  # SAM rejects Key= (empty value) in shorthand; use ParameterKey=K,ParameterValue= instead.
+  PARAMS+=("DatabaseAdminPassword=${DATABASE_ADMIN_PASSWORD:-}")
   PARAMS+=(
-    "ParameterKey=ExistingDatabaseHost,ParameterValue="
-    "ParameterKey=ExistingDatabaseAdminUser,ParameterValue="
-    "ParameterKey=ExistingDatabaseAdminPassword,ParameterValue="
+    "ExistingDatabaseHost="
+    "ExistingDatabaseAdminUser="
+    "ExistingDatabaseAdminPassword="
     "ExistingDatabaseNetworkMode=public"
-    "ParameterKey=ExistingDatabaseSubnetIdsCsv,ParameterValue="
-    "ParameterKey=ExistingDatabaseLambdaSecurityGroupId,ParameterValue="
-    "ParameterKey=ExistingDatabasePort,ParameterValue="
+    "ExistingDatabaseSubnetIdsCsv="
+    "ExistingDatabaseLambdaSecurityGroupId="
+    "ExistingDatabasePort="
     "ExistingDatabaseCreateAppUser=true"
     "ExistingDatabaseCreateSchema=true"
-    "ParameterKey=ExistingDatabaseUsernamePrefix,ParameterValue="
-    "ParameterKey=ExistingDatabaseAppUsername,ParameterValue="
+    "ExistingDatabaseUsernamePrefix="
+    "ExistingDatabaseAppUsername="
   )
 fi
 
-if [[ -n "$TOKEN_OVERRIDE" ]]; then
-  PARAMS+=("TokenEncryptionKeyOverride=$TOKEN_OVERRIDE")
-fi
-if [[ -n "$APP_DB_PASSWORD_OVERRIDE" ]]; then
-  PARAMS+=("AppDbPasswordOverride=$APP_DB_PASSWORD_OVERRIDE")
-fi
-if [[ -n "$EXISTING_TOKEN_SECRET_ARN" ]]; then
-  PARAMS+=("ExistingTokenEncryptionKeySecretArn=$EXISTING_TOKEN_SECRET_ARN")
-fi
+PARAMS+=(
+  "SlackOauthBotScopes=${SLACK_BOT_SCOPES:-app_mentions:read,channels:history,channels:join,channels:read,channels:manage,chat:write,chat:write.customize,files:read,files:write,groups:history,groups:read,groups:write,im:write,reactions:read,reactions:write,team:read,users:read,users:read.email}"
+  "SlackOauthUserScopes=${SLACK_USER_SCOPES:-chat:write,channels:history,channels:read,files:read,files:write,groups:history,groups:read,groups:write,im:write,reactions:read,reactions:write,team:read,users:read,users:read.email}"
+  "DatabaseInstanceClass=${DATABASE_INSTANCE_CLASS:-db.t4g.micro}"
+  "DatabaseBackupRetentionDays=${DATABASE_BACKUP_RETENTION_DAYS:-0}"
+  "AllowedDBCidr=${ALLOWED_DB_CIDR:-0.0.0.0/0}"
+  "VpcCidr=${VPC_CIDR:-10.0.0.0/16}"
+)
+
+echo "=== SAM Build ==="
+echo "Building app..."
+sam build -t "$APP_TEMPLATE" --use-container
 
 echo "=== SAM Deploy ==="
 echo "Deploying stack..."
-sam deploy \
-  -t .aws-sam/build/template.yaml \
-  --stack-name "$STACK_NAME" \
-  --s3-bucket "$S3_BUCKET" \
-  --capabilities CAPABILITY_IAM \
-  --region "$REGION" \
-  --no-fail-on-empty-changeset \
-  --parameter-overrides "${PARAMS[@]}"
+sam_deploy_or_fallback
 
 APP_OUTPUTS="$(app_describe_outputs "$STACK_NAME" "$REGION")"
 
@@ -1958,38 +2211,29 @@ else
   echo "Skipping Build/Deploy (task 2 not selected)."
   APP_OUTPUTS="${EXISTING_STACK_OUTPUTS:-}"
   DB_MODE="1"
-  if [[ "$PREV_STACK_USES_EXISTING_DB" == "true" ]]; then
+  if [[ "$PREV_STACK_USES_EXTERNAL_DB" == "true" ]]; then
     DB_MODE="2"
   fi
   DATABASE_SCHEMA="${PREV_DATABASE_SCHEMA:-}"
   [[ -z "$DATABASE_SCHEMA" ]] && DATABASE_SCHEMA="syncbot_${STAGE}"
   DATABASE_ENGINE="${PREV_DATABASE_ENGINE:-mysql}"
   [[ -z "$DATABASE_ENGINE" ]] && DATABASE_ENGINE="mysql"
-  EXISTING_DATABASE_HOST="${PREV_EXISTING_DATABASE_HOST:-}"
-  EXISTING_DATABASE_ADMIN_USER="${PREV_EXISTING_DATABASE_ADMIN_USER:-}"
-  EXISTING_DATABASE_ADMIN_PASSWORD="${EXISTING_DATABASE_ADMIN_PASSWORD:-}"
-  EXISTING_DATABASE_NETWORK_MODE="${PREV_EXISTING_DATABASE_NETWORK_MODE:-public}"
-  EXISTING_DATABASE_SUBNET_IDS_CSV="${PREV_EXISTING_DATABASE_SUBNET_IDS_CSV:-}"
-  EXISTING_DATABASE_LAMBDA_SG_ID="${PREV_EXISTING_DATABASE_LAMBDA_SG_ID:-}"
-  EXISTING_DATABASE_PORT="${PREV_EXISTING_DATABASE_PORT:-}"
-  EXISTING_DATABASE_CREATE_APP_USER="${PREV_EXISTING_DATABASE_CREATE_APP_USER:-true}"
-  EXISTING_DATABASE_CREATE_SCHEMA="${PREV_EXISTING_DATABASE_CREATE_SCHEMA:-true}"
-  EXISTING_DATABASE_USERNAME_PREFIX="${PREV_EXISTING_DATABASE_USERNAME_PREFIX:-}"
-  EXISTING_DATABASE_APP_USERNAME="${PREV_EXISTING_DATABASE_APP_USERNAME:-}"
-  [[ -z "$EXISTING_DATABASE_CREATE_APP_USER" ]] && EXISTING_DATABASE_CREATE_APP_USER="true"
-  [[ -z "$EXISTING_DATABASE_CREATE_SCHEMA" ]] && EXISTING_DATABASE_CREATE_SCHEMA="true"
+  DATABASE_HOST="${PREV_DATABASE_HOST:-}"
+  DATABASE_ADMIN_USER="${PREV_DATABASE_ADMIN_USER:-}"
+  DATABASE_ADMIN_PASSWORD="${DATABASE_ADMIN_PASSWORD:-}"
+  DATABASE_NETWORK_MODE="${PREV_DATABASE_NETWORK_MODE:-public}"
+  DATABASE_SUBNET_IDS_CSV="${PREV_DATABASE_SUBNET_IDS_CSV:-}"
+  DATABASE_LAMBDA_SG_ID="${PREV_DATABASE_LAMBDA_SG_ID:-}"
+  DATABASE_PORT="${PREV_DATABASE_PORT:-}"
+  DATABASE_CREATE_APP_USER="${PREV_DATABASE_CREATE_APP_USER:-true}"
+  DATABASE_CREATE_SCHEMA="${PREV_DATABASE_CREATE_SCHEMA:-true}"
+  DATABASE_USERNAME_PREFIX="${PREV_DATABASE_USERNAME_PREFIX:-}"
+  DATABASE_APP_USERNAME="${PREV_DATABASE_APP_USERNAME:-}"
+  [[ -z "$DATABASE_CREATE_APP_USER" ]] && DATABASE_CREATE_APP_USER="true"
+  [[ -z "$DATABASE_CREATE_SCHEMA" ]] && DATABASE_CREATE_SCHEMA="true"
   SLACK_SIGNING_SECRET="${SLACK_SIGNING_SECRET:-}"
   SLACK_CLIENT_SECRET="${SLACK_CLIENT_SECRET:-}"
   SLACK_CLIENT_ID="${SLACK_CLIENT_ID:-}"
-  TOKEN_SECRET_NAME="syncbot-${STAGE}-token-encryption-key"
-  APP_DB_SECRET_NAME="syncbot-${STAGE}-app-db-password"
-  TOKEN_OVERRIDE=""
-  EXISTING_TOKEN_SECRET_ARN=""
-  RECEIPT_TOKEN_SECRET_ID=""
-  RECEIPT_APP_DB_SECRET_NAME=""
-  TOKEN_SECRET_ID=""
-  TOKEN_SECRET_VALUE=""
-  APP_DB_SECRET_VALUE=""
 fi
 
 SYNCBOT_API_URL="$(output_value "$APP_OUTPUTS" "SyncBotApiUrl")"
@@ -2018,69 +2262,130 @@ if [[ "$TASK_CICD" == "true" ]]; then
     "$STAGE" \
     "$DATABASE_SCHEMA" \
     "$DB_MODE" \
-    "$EXISTING_DATABASE_HOST" \
-    "$EXISTING_DATABASE_ADMIN_USER" \
-    "$EXISTING_DATABASE_ADMIN_PASSWORD" \
-    "$EXISTING_DATABASE_NETWORK_MODE" \
-    "$EXISTING_DATABASE_SUBNET_IDS_CSV" \
-    "$EXISTING_DATABASE_LAMBDA_SG_ID" \
+    "$DATABASE_HOST" \
+    "$DATABASE_ADMIN_USER" \
+    "$DATABASE_ADMIN_PASSWORD" \
+    "$DATABASE_NETWORK_MODE" \
+    "$DATABASE_SUBNET_IDS_CSV" \
+    "$DATABASE_LAMBDA_SG_ID" \
     "$DATABASE_ENGINE" \
-    "${EXISTING_DATABASE_PORT:-}" \
-    "${EXISTING_DATABASE_CREATE_APP_USER:-true}" \
-    "${EXISTING_DATABASE_CREATE_SCHEMA:-true}" \
-    "${EXISTING_DATABASE_USERNAME_PREFIX:-}" \
-    "${EXISTING_DATABASE_APP_USERNAME:-}"
+    "${DATABASE_PORT:-}" \
+    "${DATABASE_CREATE_APP_USER:-true}" \
+    "${DATABASE_CREATE_SCHEMA:-true}" \
+    "${DATABASE_USERNAME_PREFIX:-}" \
+    "${DATABASE_APP_USERNAME:-}"
 fi
 
-if [[ "$TASK_BUILD_DEPLOY" == "true" || "$TASK_BACKUP_SECRETS" == "true" ]]; then
-  # Prepare secret metadata/value so receipt and final backup output stay in sync.
-  if [[ -n "${TOKEN_OVERRIDE:-}" ]]; then
-    RECEIPT_TOKEN_SECRET_ID="TokenEncryptionKeyOverride"
-    TOKEN_SECRET_ID="TokenEncryptionKeyOverride"
-    TOKEN_SECRET_VALUE="$TOKEN_OVERRIDE"
-  else
-    TOKEN_SECRET_ID="${TOKEN_SECRET_NAME:-}"
-    if [[ -n "${EXISTING_TOKEN_SECRET_ARN:-}" ]]; then
-      TOKEN_SECRET_ID="$EXISTING_TOKEN_SECRET_ARN"
+# --- Save config to env file ---
+echo
+if prompt_yes_no "Save config to .env.deploy.${STAGE} for future deploys?" "y"; then
+  ENV_SAVE_FILE="$REPO_ROOT/.env.deploy.${STAGE}"
+  {
+    echo "# Generated by deploy.sh on $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "CLOUD_PROVIDER=aws"
+    echo "AWS_REGION=$REGION"
+    echo "STACK_NAME=$STACK_NAME"
+    echo "BOOTSTRAP_STACK_NAME=$BOOTSTRAP_STACK"
+    echo ""
+    echo "SLACK_SIGNING_SECRET=$SLACK_SIGNING_SECRET"
+    echo "SLACK_CLIENT_SECRET=$SLACK_CLIENT_SECRET"
+    echo "SLACK_CLIENT_ID=$SLACK_CLIENT_ID"
+    echo ""
+    echo "DATA_ENCRYPTION_KEY=$DATA_ENCRYPTION_KEY"
+    echo ""
+    echo "DATABASE_HOST=${DATABASE_HOST:-}"
+    [[ -n "${DB_EFFECTIVE_PORT:-}" ]] && echo "DATABASE_PORT=$DB_EFFECTIVE_PORT"
+    echo "DATABASE_USER=${DATABASE_USER:-}"
+    echo "DATABASE_PASSWORD=$DATABASE_PASSWORD"
+    echo "DATABASE_SCHEMA=$DATABASE_SCHEMA"
+    echo "DATABASE_ENGINE=$DATABASE_ENGINE"
+    [[ -n "${DATABASE_TLS_ENABLED:-}" ]] && echo "DATABASE_TLS_ENABLED=$DATABASE_TLS_ENABLED"
+    if [[ "$DB_MODE" == "2" ]]; then
+      echo ""
+      echo "DATABASE_ADMIN_USER=$DATABASE_ADMIN_USER"
+      [[ -n "$DATABASE_ADMIN_PASSWORD" ]] && echo "DATABASE_ADMIN_PASSWORD=$DATABASE_ADMIN_PASSWORD"
+      [[ -n "${DATABASE_USERNAME_PREFIX:-}" ]] && echo "DATABASE_USERNAME_PREFIX=$DATABASE_USERNAME_PREFIX"
+      [[ -n "${DATABASE_APP_USERNAME:-}" ]] && echo "DATABASE_APP_USERNAME=$DATABASE_APP_USERNAME"
+      echo "DATABASE_CREATE_APP_USER=${DATABASE_CREATE_APP_USER:-true}"
+      echo "DATABASE_CREATE_SCHEMA=${DATABASE_CREATE_SCHEMA:-true}"
     fi
-    TOKEN_SECRET_VALUE="$(secret_value_by_id "$TOKEN_SECRET_ID" "$REGION" 2>/dev/null || true)"
-    RECEIPT_TOKEN_SECRET_ID="$TOKEN_SECRET_ID"
-  fi
-  APP_DB_SECRET_VALUE="$(secret_value_by_id "$APP_DB_SECRET_NAME" "$REGION" 2>/dev/null || true)"
-  RECEIPT_APP_DB_SECRET_NAME="$APP_DB_SECRET_NAME"
+  } > "$ENV_SAVE_FILE"
+  chmod 600 "$ENV_SAVE_FILE"
+  echo "Saved to $ENV_SAVE_FILE"
+  echo "Next time: ./deploy.sh --env $STAGE aws"
 fi
 
-if [[ "$TASK_BUILD_DEPLOY" == "true" ]]; then
+# --- Push to GitHub (if --setup-github and TASK_CICD was not already run) ---
+if [[ "${SETUP_GITHUB:-}" == "true" && "$TASK_CICD" != "true" ]]; then
   echo
-  echo "=== Deploy Receipt ==="
-  write_deploy_receipt \
-    "aws" \
-    "$STAGE" \
-    "$STACK_NAME" \
-    "$REGION" \
-    "$SYNCBOT_API_URL" \
-    "$SYNCBOT_INSTALL_URL" \
-    "$SLACK_MANIFEST_GENERATED_PATH"
+  echo "=== Push to GitHub Environment ==="
+  prereqs_require_cmd gh prereqs_hint_gh_cli
+  if ! gh auth status >/dev/null 2>&1; then
+    echo "Error: gh CLI not authenticated. Run 'gh auth login' first." >&2
+    exit 1
+  fi
+  REPO="$(prompt_github_repo_for_actions "$REPO_ROOT")"
+  ENV_NAME="$STAGE"
+  ROLE_ARN="${AWS_ROLE_ARN:-$(output_value "$BOOTSTRAP_OUTPUTS" "GitHubDeployRoleArn")}"
+
+  gh api -X PUT "repos/$REPO/environments/$ENV_NAME" >/dev/null
+  [[ -n "$ROLE_ARN" ]] && gh variable set AWS_ROLE_TO_ASSUME --body "$ROLE_ARN" -R "$REPO"
+  [[ -n "$S3_BUCKET" ]] && gh variable set AWS_S3_BUCKET --body "$S3_BUCKET" -R "$REPO"
+  gh variable set AWS_REGION --body "$REGION" -R "$REPO"
+  gh_variable_set_env AWS_STACK_NAME "$ENV_NAME" "$REPO" "$STACK_NAME"
+  gh_variable_set_env STAGE_NAME "$ENV_NAME" "$REPO" "$STAGE"
+  gh_variable_set_env DATABASE_SCHEMA "$ENV_NAME" "$REPO" "$DATABASE_SCHEMA"
+  gh_variable_set_env DATABASE_ENGINE "$ENV_NAME" "$REPO" "$DATABASE_ENGINE"
+  gh_variable_set_env SLACK_CLIENT_ID "$ENV_NAME" "$REPO" "$SLACK_CLIENT_ID"
+  if [[ -n "$DATABASE_HOST" ]]; then
+    gh_variable_set_env DATABASE_HOST "$ENV_NAME" "$REPO" "$DATABASE_HOST"
+    gh_variable_set_env DATABASE_ADMIN_USER "$ENV_NAME" "$REPO" "${DATABASE_ADMIN_USER:-}"
+    gh_variable_set_env DATABASE_NETWORK_MODE "$ENV_NAME" "$REPO" "${DATABASE_NETWORK_MODE:-public}"
+    if [[ "${DATABASE_NETWORK_MODE:-public}" == "private" ]]; then
+      gh_variable_set_env DATABASE_SUBNET_IDS_CSV "$ENV_NAME" "$REPO" "${DATABASE_SUBNET_IDS_CSV:-}"
+      gh_variable_set_env DATABASE_LAMBDA_SECURITY_GROUP_ID "$ENV_NAME" "$REPO" "${DATABASE_LAMBDA_SG_ID:-${DATABASE_LAMBDA_SECURITY_GROUP_ID:-}}"
+    else
+      gh_variable_set_env DATABASE_SUBNET_IDS_CSV "$ENV_NAME" "$REPO" ""
+      gh_variable_set_env DATABASE_LAMBDA_SECURITY_GROUP_ID "$ENV_NAME" "$REPO" ""
+    fi
+    gh_variable_set_env DATABASE_PORT "$ENV_NAME" "$REPO" "${DATABASE_PORT:-}"
+    gh_variable_set_env DATABASE_CREATE_APP_USER "$ENV_NAME" "$REPO" "${DATABASE_CREATE_APP_USER:-true}"
+    gh_variable_set_env DATABASE_CREATE_SCHEMA "$ENV_NAME" "$REPO" "${DATABASE_CREATE_SCHEMA:-true}"
+    gh_variable_set_env DATABASE_USERNAME_PREFIX "$ENV_NAME" "$REPO" "${DATABASE_USERNAME_PREFIX:-}"
+    gh_variable_set_env DATABASE_APP_USERNAME "$ENV_NAME" "$REPO" "${DATABASE_APP_USERNAME:-}"
+    gh_variable_set_env DATABASE_USER "$ENV_NAME" "$REPO" "${DATABASE_USER:-}"
+  else
+    gh_variable_set_env DATABASE_HOST "$ENV_NAME" "$REPO" ""
+    gh_variable_set_env DATABASE_ADMIN_USER "$ENV_NAME" "$REPO" ""
+    gh_variable_set_env DATABASE_NETWORK_MODE "$ENV_NAME" "$REPO" "public"
+    gh_variable_set_env DATABASE_SUBNET_IDS_CSV "$ENV_NAME" "$REPO" ""
+    gh_variable_set_env DATABASE_LAMBDA_SECURITY_GROUP_ID "$ENV_NAME" "$REPO" ""
+    gh_variable_set_env DATABASE_PORT "$ENV_NAME" "$REPO" ""
+    gh_variable_set_env DATABASE_CREATE_APP_USER "$ENV_NAME" "$REPO" "true"
+    gh_variable_set_env DATABASE_CREATE_SCHEMA "$ENV_NAME" "$REPO" "true"
+    gh_variable_set_env DATABASE_USERNAME_PREFIX "$ENV_NAME" "$REPO" ""
+    gh_variable_set_env DATABASE_APP_USERNAME "$ENV_NAME" "$REPO" ""
+    gh_variable_set_env DATABASE_USER "$ENV_NAME" "$REPO" ""
+  fi
+  echo "Setting GitHub environment secrets for '$ENV_NAME' (Slack, DATA_ENCRYPTION_KEY, DATABASE_PASSWORD, ...)..."
+  gh secret set SLACK_SIGNING_SECRET --env "$ENV_NAME" --body "$SLACK_SIGNING_SECRET" -R "$REPO"
+  gh secret set SLACK_CLIENT_SECRET --env "$ENV_NAME" --body "$SLACK_CLIENT_SECRET" -R "$REPO"
+  gh secret set DATA_ENCRYPTION_KEY --env "$ENV_NAME" --body "$DATA_ENCRYPTION_KEY" -R "$REPO"
+  gh secret set DATABASE_PASSWORD --env "$ENV_NAME" --body "$DATABASE_PASSWORD" -R "$REPO"
+  [[ -n "${DATABASE_ADMIN_PASSWORD:-}" ]] && gh secret set DATABASE_ADMIN_PASSWORD --env "$ENV_NAME" --body "$DATABASE_ADMIN_PASSWORD" -R "$REPO"
+  echo "GitHub environment '$ENV_NAME' updated for repo $REPO."
 fi
 
-if [[ "$TASK_BACKUP_SECRETS" == "true" ]]; then
-  echo
-  echo "=== Backup Secrets (Disaster Recovery) ==="
-  # IMPORTANT: When Backup Secrets is selected, print plaintext backup secrets here.
-  # Do not remove/redact this section; operators rely on it for DR copy-out.
-  echo "Copy these values now and store them in your secure disaster-recovery vault."
+echo
+echo "=== Deploy Receipt ==="
+write_deploy_receipt
 
-  echo "- TOKEN_ENCRYPTION_KEY source: ${TOKEN_SECRET_ID:-<unknown>}"
-  if [[ -n "${TOKEN_SECRET_VALUE:-}" && "$TOKEN_SECRET_VALUE" != "None" ]]; then
-    echo "  TOKEN_ENCRYPTION_KEY: $TOKEN_SECRET_VALUE"
-  else
-    echo "  TOKEN_ENCRYPTION_KEY: <UNAVAILABLE - check Secrets Manager access and retrieve manually>"
-  fi
-
-  echo "- DATABASE_PASSWORD source: ${APP_DB_SECRET_NAME:-<unknown>}"
-  if [[ -n "${APP_DB_SECRET_VALUE:-}" && "$APP_DB_SECRET_VALUE" != "None" ]]; then
-    echo "  DATABASE_PASSWORD: $APP_DB_SECRET_VALUE"
-  else
-    echo "  DATABASE_PASSWORD: <UNAVAILABLE - check Secrets Manager access and retrieve manually>"
-  fi
+echo
+echo "=== Deploy Complete ==="
+echo "Stack:       $STACK_NAME"
+echo "Region:      $REGION"
+echo "API URL:     ${SYNCBOT_API_URL:-n/a}"
+echo "Install URL: ${SYNCBOT_INSTALL_URL:-n/a}"
+if [[ -n "${SYNCBOT_API_URL:-}" ]]; then
+  echo "OAuth URL:   ${SYNCBOT_API_URL%/slack/events}/slack/oauth_redirect"
 fi

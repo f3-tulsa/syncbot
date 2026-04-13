@@ -362,6 +362,16 @@ prompt_github_repo_for_actions() {
   canon="$(mktemp)"
   tmp="$(mktemp)"
 
+  if [[ -n "${GITHUB_REPO:-}" ]]; then
+    if [[ "$GITHUB_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+      echo "Using GitHub repository: $GITHUB_REPO (from GITHUB_REPO env var)" >&2
+      _cr_done
+      echo "$GITHUB_REPO"
+      return 0
+    fi
+    echo "Warning: GITHUB_REPO is set but invalid (expected owner/repo); ignoring." >&2
+  fi
+
   if ! git -C "$git_dir" rev-parse --git-dir >/dev/null 2>&1; then
     echo "Not a git checkout; enter GitHub owner/repo manually." >&2
     while true; do
@@ -524,12 +534,11 @@ prompt_deploy_tasks_aws() {
   printf '  2) %s\n' "Build/Deploy - SAM build + deploy"
   printf '  3) %s\n' "CI/CD - GitHub Actions configuration"
   printf '  4) %s\n' "Slack API - Configure Slack app via API"
-  printf '  5) %s\n' "Backup Secrets - Print DR backup secrets"
-  local default_all="1,2,3,4,5"
+  local default_all="1,2,3,4"
   local choices=""
   read -r -e -p "Select tasks (comma-separated) [$default_all]: " choices
   choices="${choices:-$default_all}"
-  _prompt_deploy_tasks_parsechoices "$choices" TASK_BOOTSTRAP TASK_BUILD_DEPLOY TASK_CICD TASK_SLACK_API TASK_BACKUP_SECRETS
+  _prompt_deploy_tasks_parsechoices "$choices" TASK_BOOTSTRAP TASK_BUILD_DEPLOY TASK_CICD TASK_SLACK_API
 }
 
 prompt_deploy_tasks_gcp() {
@@ -537,12 +546,66 @@ prompt_deploy_tasks_gcp() {
   printf '  1) %s\n' "Build/Deploy - Terraform plan + apply"
   printf '  2) %s\n' "CI/CD - GitHub Actions configuration"
   printf '  3) %s\n' "Slack API - Configure Slack app via API"
-  printf '  4) %s\n' "Backup Secrets - Print DR backup secrets"
-  local default_all="1,2,3,4"
+  local default_all="1,2,3"
   local choices=""
   read -r -e -p "Select tasks (comma-separated) [$default_all]: " choices
   choices="${choices:-$default_all}"
-  _prompt_deploy_tasks_parsechoices "$choices" TASK_BUILD_DEPLOY TASK_CICD TASK_SLACK_API TASK_BACKUP_SECRETS
+  _prompt_deploy_tasks_parsechoices "$choices" TASK_BUILD_DEPLOY TASK_CICD TASK_SLACK_API
+}
+
+# ---------------------------------------------------------------------------
+# Env file helpers (shared with provider scripts for save-back and SM resolution).
+# ---------------------------------------------------------------------------
+
+update_env_file() {
+  local file="$1" key="$2" value="$3"
+  if [[ ! -f "$file" ]]; then
+    echo "${key}=${value}" >> "$file"
+    return
+  fi
+  if grep -q "^${key}=" "$file" 2>/dev/null; then
+    sed -i.bak "s|^${key}=.*|${key}=${value}|" "$file" && rm -f "${file}.bak"
+  elif grep -q "^# *${key}=" "$file" 2>/dev/null; then
+    sed -i.bak "s|^# *${key}=.*|${key}=${value}|" "$file" && rm -f "${file}.bak"
+  else
+    echo "${key}=${value}" >> "$file"
+  fi
+}
+
+resolve_sm_id_vars() {
+  local provider="${CLOUD_PROVIDER:-aws}"
+  local var_name base_name secret_id value
+  while IFS='=' read -r var_name _; do
+    [[ "$var_name" == *_SM_ID ]] || continue
+    base_name="${var_name%_SM_ID}"
+    if [[ -n "${!base_name:-}" ]]; then
+      continue
+    fi
+    secret_id="${!var_name}"
+    [[ -z "$secret_id" ]] && continue
+    case "$provider" in
+      aws)
+        value="$(aws secretsmanager get-secret-value \
+          --secret-id "$secret_id" --query SecretString --output text 2>/dev/null)" || {
+          echo "Warning: could not resolve $var_name=$secret_id from AWS Secrets Manager" >&2
+          continue
+        }
+        ;;
+      gcp)
+        value="$(gcloud secrets versions access latest \
+          --secret="$secret_id" 2>/dev/null)" || {
+          echo "Warning: could not resolve $var_name=$secret_id from GCP Secret Manager" >&2
+          continue
+        }
+        ;;
+      *)
+        echo "Warning: unknown CLOUD_PROVIDER '$provider'; skipping $var_name" >&2
+        continue
+        ;;
+    esac
+    export "$base_name=$value"
+    echo "  Resolved $base_name from SM: $secret_id"
+  done < <(env | sort)
 }
 
 # When sourced by infra/*/scripts/deploy.sh, only load helpers above.
@@ -556,7 +619,23 @@ fi
 
 usage() {
   cat <<EOF
-Usage: ./deploy.sh [selection]
+Usage: ./deploy.sh [--env <stage>] [--bootstrap] [--setup-github] [--verbose]
+                   [--update-stack] [selection]
+
+Options:
+  --env <stage>     Source .env.deploy.<stage> and run a non-interactive deploy
+                    (e.g. --env test, --env prod).  CLOUD_PROVIDER in the env
+                    file makes the [selection] argument optional.
+  --bootstrap       Create/sync the bootstrap stack before app deploy (AWS only).
+  --setup-github    Push config to GitHub environment vars/secrets after deploy.
+                    Works with --env (non-interactive) or interactive deploys.
+  --verbose         Extended deploy receipts (SAM/Terraform parameters, inline
+                    Slack manifest) and extra screen output for debugging.
+  --update-stack    AWS only. Skip sam deploy and use aws cloudformation
+                    update-stack directly (no changeset; bypasses early
+                    validation). Normally unnecessary: the AWS deploy script
+                    auto-retries with update-stack when CloudFormation rejects
+                    a changeset with EarlyValidation::ResourceExistenceCheck.
 
 No args:
   Scan infra/*/scripts/deploy.sh, show a numbered menu, and run your choice.
@@ -568,7 +647,13 @@ With [selection]:
 Examples:
   ./deploy.sh
   ./deploy.sh aws
-  ./deploy.sh 1
+  ./deploy.sh --env test aws
+  ./deploy.sh --env test                         # uses CLOUD_PROVIDER from env file
+  ./deploy.sh --env test --bootstrap aws         # bootstrap + deploy
+  ./deploy.sh --env prod --setup-github aws
+  ./deploy.sh --setup-github aws                 # interactive deploy + GitHub push
+  ./deploy.sh --env test --verbose aws           # verbose receipt + screen output
+  ./deploy.sh --env test --update-stack aws      # force direct update-stack (optional)
 EOF
 }
 
@@ -636,9 +721,77 @@ resolve_script_from_selection() {
 }
 
 main() {
-  if [[ "${1:-}" == "-h" || "${1:-}" == "--help" || "${1:-}" == "help" ]]; then
-    usage
-    exit 0
+  local env_name="" setup_github="false" bootstrap="false" verbose="false" update_stack="false" selection=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h | --help | help)
+        usage
+        exit 0
+        ;;
+      --env)
+        shift
+        env_name="${1:?--env requires a stage name (e.g. test, prod)}"
+        shift
+        ;;
+      --setup-github)
+        setup_github="true"
+        shift
+        ;;
+      --bootstrap)
+        bootstrap="true"
+        shift
+        ;;
+      --verbose)
+        verbose="true"
+        shift
+        ;;
+      --update-stack)
+        update_stack="true"
+        shift
+        ;;
+      *)
+        selection="$1"
+        shift
+        ;;
+    esac
+  done
+
+  export SETUP_GITHUB="$setup_github"
+  export BOOTSTRAP="$bootstrap"
+  export VERBOSE="$verbose"
+
+  if [[ -n "$env_name" ]]; then
+    local env_file="$REPO_ROOT/.env.deploy.$env_name"
+    if [[ ! -f "$env_file" ]]; then
+      echo "Error: env file not found: $env_file" >&2
+      echo "Copy .env.deploy.example to $env_file and fill in values." >&2
+      exit 1
+    fi
+    echo "=== Loading $env_file ==="
+    set -a
+    # shellcheck disable=SC1090
+    source "$env_file"
+    set +a
+    export STAGE="$env_name"
+    export ENV_FILE_LOADED="true"
+    export ENV_FILE_PATH="$env_file"
+
+    if env | grep -q '_SM_ID='; then
+      echo "=== Resolving Secret Manager References ==="
+      resolve_sm_id_vars
+    fi
+  fi
+
+  # UPDATE_STACK: CLI --update-stack wins; else keep value from .env.deploy.* if set.
+  if [[ "$update_stack" == "true" ]]; then
+    export UPDATE_STACK=true
+  else
+    export UPDATE_STACK="${UPDATE_STACK:-false}"
+  fi
+
+  if [[ -z "$selection" && -n "${CLOUD_PROVIDER:-}" ]]; then
+    selection="$CLOUD_PROVIDER"
   fi
 
   local entries
@@ -648,7 +801,6 @@ main() {
     exit 1
   fi
 
-  local selection="${1:-}"
   if [[ -z "$selection" ]]; then
     selection="$(select_script_interactive "$entries")"
   fi

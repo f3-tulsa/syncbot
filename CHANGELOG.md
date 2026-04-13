@@ -5,6 +5,33 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `--bootstrap`, `--setup-github`, `--update-stack`, `--verbose` deploy flags (both interactive and non-interactive)
+- `GITHUB_REPO` env var to skip interactive repo prompt when multiple remotes exist
+- `.env.deploy.example` template for cloud deployments
+- CI: bootstrap sync, `workflow_dispatch`, concurrency groups, `pip-audit`
+- AWS: auto-fallback to `update-stack` when `sam deploy` fails on changeset validation
+- Deploy summary with OAuth redirect URL, consistent across all paths
+
+### Changed
+
+- AWS: Lambda Function URLs replace API Gateway; Secrets Manager removed
+- GCP: Secret Manager removed (secrets via Terraform variables)
+- `TOKEN_ENCRYPTION_KEY` renamed to `DATA_ENCRYPTION_KEY` (legacy fallback kept)
+- Deploy env vars simplified: `DATABASE_*` replaces `EXISTING_DATABASE_*`
+- `DATABASE_USER` is a GitHub environment variable, not a secret
+- `DatabaseSchema` convention (`syncbot_<stage>`) documented in prompts, example, and docs
+- `DbSetup` skipped when `DATABASE_USER` + `DATABASE_PASSWORD` provided directly
+- Bumped GitHub Actions dependencies (`checkout` v6, `setup-python` v6, etc.)
+
+### Fixed
+
+- Interactive GitHub push: Lambda SG ID and `SLACK_CLIENT_ID` now set correctly
+- CI script: log group cleanup output to stderr; defensive `mkdir` before `sam package`
+
 ## [1.0.2] - 2026-03-28
 
 ### Added

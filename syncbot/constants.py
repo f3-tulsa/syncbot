@@ -26,7 +26,8 @@ SLACK_CLIENT_SECRET = "SLACK_CLIENT_SECRET"
 SLACK_BOT_SCOPES = "SLACK_BOT_SCOPES"
 SLACK_USER_SCOPES = "SLACK_USER_SCOPES"
 SLACK_SIGNING_SECRET = "SLACK_SIGNING_SECRET"
-TOKEN_ENCRYPTION_KEY = "TOKEN_ENCRYPTION_KEY"
+DATA_ENCRYPTION_KEY = "DATA_ENCRYPTION_KEY"
+_DATA_ENCRYPTION_KEY_LEGACY = "TOKEN_ENCRYPTION_KEY"
 REQUIRE_ADMIN = "REQUIRE_ADMIN"
 
 # Database: backend-agnostic (postgresql, mysql, or sqlite)
@@ -175,25 +176,26 @@ _REQUIRED_PRODUCTION = [
     SLACK_CLIENT_ID,
     SLACK_CLIENT_SECRET,
     SLACK_BOT_SCOPES,
-    TOKEN_ENCRYPTION_KEY,
+    DATA_ENCRYPTION_KEY,
 ]
 
 
-# Minimum length for TOKEN_ENCRYPTION_KEY in production (reject weak/placeholder values).
-_TOKEN_ENCRYPTION_KEY_MIN_LEN = 16
-_TOKEN_ENCRYPTION_KEY_PLACEHOLDERS = frozenset({"123", "changeme", "secret", "password"})
+# Minimum length for DATA_ENCRYPTION_KEY in production (reject weak/placeholder values).
+_DATA_ENCRYPTION_KEY_MIN_LEN = 16
+_DATA_ENCRYPTION_KEY_PLACEHOLDERS = frozenset({"123", "changeme", "secret", "password"})
 
 
 def _encryption_active() -> bool:
-    """Return True if bot-token encryption is configured with a strong key.
+    """Return True if data encryption is configured with a strong key.
 
-    In non-local environments the key must be set, at least _TOKEN_ENCRYPTION_KEY_MIN_LEN
+    Checks DATA_ENCRYPTION_KEY first, then legacy TOKEN_ENCRYPTION_KEY.
+    In non-local environments the key must be set, at least _DATA_ENCRYPTION_KEY_MIN_LEN
     characters, and not a known placeholder. Local dev can use any value or leave unset.
     """
-    key = (os.environ.get(TOKEN_ENCRYPTION_KEY) or "").strip()
-    if not key or len(key) < _TOKEN_ENCRYPTION_KEY_MIN_LEN:
+    key = (os.environ.get(DATA_ENCRYPTION_KEY) or os.environ.get(_DATA_ENCRYPTION_KEY_LEGACY) or "").strip()
+    if not key or len(key) < _DATA_ENCRYPTION_KEY_MIN_LEN:
         return False
-    return key.lower() not in _TOKEN_ENCRYPTION_KEY_PLACEHOLDERS
+    return key.lower() not in _DATA_ENCRYPTION_KEY_PLACEHOLDERS
 
 
 def validate_config() -> None:
@@ -219,9 +221,9 @@ def validate_config() -> None:
 
     if not LOCAL_DEVELOPMENT and not _encryption_active():
         msg = (
-            "TOKEN_ENCRYPTION_KEY is required in production and must be a secure, random value "
-            f"(at least {_TOKEN_ENCRYPTION_KEY_MIN_LEN} characters). "
-            "Use your provider's secret manager; the AWS template auto-generates it. "
+            "DATA_ENCRYPTION_KEY is required in production and must be a secure, random value "
+            f"(at least {_DATA_ENCRYPTION_KEY_MIN_LEN} characters). "
+            "Use your provider's secret manager; the deploy script auto-generates it. "
             "Back up the key after first deploy. In local dev you may set it manually or leave unset."
         )
         _logger.critical(msg)

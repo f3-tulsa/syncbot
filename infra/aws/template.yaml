@@ -2,7 +2,7 @@ AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: >
   SyncBot - Slack app that syncs posts and replies across workspaces.
-  Free-tier compatible: Lambda, API Gateway, RDS PostgreSQL or MySQL (db.t4g.micro).
+  Free-tier compatible: Lambda Function URL, RDS PostgreSQL or MySQL (db.t4g.micro).
   OAuth and app data use RDS; media is uploaded directly to Slack.
   SAM deploy uses an S3 artifact bucket for packaging only (not runtime).
   Template lives under infra/aws; CodeUri points at repo-root syncbot/ (includes db/alembic for migrations).
@@ -11,21 +11,13 @@ Globals:
   Function:
     Timeout: 10
     MemorySize: 128
-    Tracing: Active
-  Api:
-    TracingEnabled: true
-    MethodSettings:
-      - ResourcePath: "/*"
-        HttpMethod: "*"
-        ThrottlingBurstLimit: 20
-        ThrottlingRateLimit: 10
+    Tracing: !If [XRayEnabled, Active, PassThrough]
 
 # ================================================================
 # Parameters
 # ================================================================
-# Grouping: Stage/engine → Slack (maps to SLACK_* env) → RDS / VPC →
-# secrets/overrides (TOKEN_ENCRYPTION_KEY, DB password) → RequireAdmin.
-# See each Description for the runtime env name where applicable.
+# Grouping: Stage/engine → Slack → Database (direct creds or admin for DbSetup) →
+# app secrets → app settings.
 
 Parameters:
   Stage:
@@ -38,7 +30,7 @@ Parameters:
 
   DatabaseEngine:
     Description: >
-      SQL engine for new or existing RDS database host.
+      SQL engine for new or existing database host.
       Supported engines: mysql or postgresql. Default is mysql.
     Type: String
     Default: mysql
@@ -76,33 +68,58 @@ Parameters:
     Type: String
     Default: "chat:write,channels:history,channels:read,files:read,files:write,groups:history,groups:read,groups:write,im:write,reactions:read,reactions:write,team:read,users:read,users:read.email"
 
-  # --- Database (RDS) ---
+  # --- Database: direct credentials (default path — external DB with pre-existing user) ---
+
+  DatabaseUser:
+    Description: >
+      App database username (DATABASE_USER). Set this when the DB user already
+      exists (e.g. TiDB Cloud) to skip DbSetup entirely. Leave empty when
+      ExistingDatabaseAdminUser is set (DbSetup creates the app user).
+    Type: String
+    Default: ""
+
+  DatabasePassword:
+    Description: >
+      App database password (DATABASE_PASSWORD). Required for all deploy paths.
+      When using DbSetup, this becomes the newly created app user's password.
+    Type: String
+    NoEcho: true
+
+  DataEncryptionKey:
+    Description: >
+      Passphrase for Fernet data-at-rest encryption (DATA_ENCRYPTION_KEY).
+      Generate with: python3 -c "import secrets; print(secrets.token_urlsafe(36))"
+    Type: String
+    NoEcho: true
+
+  # --- Database: existing host (external DB) ---
 
   ExistingDatabaseHost:
     Description: >
-      Endpoint of an existing RDS instance (e.g. mydb.xxxx.us-east-2.rds.amazonaws.com).
-      Leave EMPTY to create a new RDS instance. When set, all VPC and RDS
-      resources are skipped and the deploy creates the schema and app user for you.
+      Endpoint of an existing database (e.g. gateway.tidbcloud.com).
+      Leave EMPTY to create a new RDS instance. When set with DatabaseUser +
+      DatabasePassword, the deploy uses those credentials directly.
+      Set ExistingDatabaseAdminUser to have DbSetup create the app user instead.
     Type: String
     Default: ""
 
   ExistingDatabaseAdminUser:
     Description: >
-      Database admin user that can create databases and users (e.g. RDS master). Used only when
-      ExistingDatabaseHost is set; the deploy creates a dedicated app user and schema.
-      When ExistingDatabaseUsernamePrefix is set, use the bare name (e.g. root); the prefix is prepended in the bootstrap Lambda.
+      Database admin user that can create databases and users (e.g. RDS master).
+      When set, DbSetup runs to create an app user and optionally the schema.
+      Leave empty when DatabaseUser is already set up (default TiDB path).
     Type: String
     Default: ""
 
   ExistingDatabaseAdminPassword:
-    Description: Password for ExistingDatabaseAdminUser. Used only when using existing host.
+    Description: Password for ExistingDatabaseAdminUser. Used only when DbSetup runs.
     Type: String
     NoEcho: true
     Default: ""
 
   ExistingDatabaseNetworkMode:
     Description: >
-      Network mode for existing database host. Use "public" when the existing RDS
+      Network mode for existing database host. Use "public" when the existing
       endpoint is reachable from the public Internet. Use "private" when it is only
       reachable from within a VPC.
     Type: String
@@ -136,8 +153,8 @@ Parameters:
 
   ExistingDatabaseCreateAppUser:
     Description: >
-      When ExistingDatabaseHost is set: "true" (default) creates a dedicated app user and grants schema access.
-      Set "false" for managed DBs that disallow CREATE USER; admin password is copied to the app DB secret and DATABASE_USER is the admin user.
+      When ExistingDatabaseAdminUser is set: "true" (default) creates a dedicated app
+      user and grants schema access. Set "false" for managed DBs that disallow CREATE USER.
     Type: String
     Default: "true"
     AllowedValues:
@@ -146,7 +163,7 @@ Parameters:
 
   ExistingDatabaseCreateSchema:
     Description: >
-      When ExistingDatabaseHost is set: "true" (default) runs CREATE DATABASE IF NOT EXISTS for DatabaseSchema.
+      When ExistingDatabaseAdminUser is set: "true" (default) runs CREATE DATABASE IF NOT EXISTS.
       Set "false" when the database already exists. Ignored when creating new RDS in stack.
     Type: String
     Default: "true"
@@ -159,25 +176,34 @@ Parameters:
       Username prefix required by some managed DB providers (e.g. TiDB Cloud cluster prefix "abc123").
       A dot separator is added automatically if missing. Prepended to ExistingDatabaseAdminUser and to the
       default app user ({prefix}.sbapp_{Stage}) unless ExistingDatabaseAppUsername is set.
-      Use the bare admin name (e.g. root) when this is set.
       Leave empty for standard databases (RDS, self-hosted). Ignored when creating new RDS in stack.
     Type: String
     Default: ""
 
   ExistingDatabaseAppUsername:
     Description: >
-      When ExistingDatabaseHost is set and CreateAppUser is true: optional full app DB username (bypasses
+      When ExistingDatabaseAdminUser is set and CreateAppUser is true: optional full app DB username (bypasses
       prefix + default sbapp_{Stage}). Use when the auto-generated name exceeds provider limits (e.g. MySQL 32 chars)
       or you need a fixed name. Leave empty for default {prefix}.sbapp_{Stage}. Ignored when creating new RDS in stack.
     Type: String
     Default: ""
 
+  # --- Database: new RDS (created by this stack) ---
+
   DatabaseSchema:
     Description: >
-      Database/schema name for MySQL or PostgreSQL. Each app sharing an RDS instance
+      Database/schema name for MySQL or PostgreSQL. Each app sharing a DB instance
       should use a different schema name.
     Type: String
     Default: "syncbot"
+
+  DatabaseAdminPassword:
+    Description: >
+      Admin password for new RDS instances created by this stack.
+      Ignored when using an existing database host.
+    Type: String
+    NoEcho: true
+    Default: ""
 
   DatabaseInstanceClass:
     Description: "RDS instance class (db.t4g.micro is free-tier eligible). Ignored when using an existing database."
@@ -210,32 +236,7 @@ Parameters:
     Type: String
     Default: "10.0.0.0/16"
 
-  # --- Secrets and optional overrides (disaster recovery / recreate) ---
-
-  TokenEncryptionKeyOverride:
-    Description: >
-      Optional disaster-recovery override for TOKEN_ENCRYPTION_KEY.
-      Use only when restoring an existing deployment with a known key.
-      Leave empty for normal deploys (auto-generated Secret Manager key is used).
-    Type: String
-    NoEcho: true
-    Default: ""
-
-  ExistingTokenEncryptionKeySecretArn:
-    Description: >
-      Optional existing Secrets Manager secret ARN containing TOKEN_ENCRYPTION_KEY.
-      Use this when the secret already exists (for example after a failed create/delete cycle)
-      to avoid secret name collisions.
-    Type: String
-    Default: ""
-
-  AppDbPasswordOverride:
-    Description: >
-      Optional app DB password override used only when recreating the app DB secret.
-      Leave empty for normal deploys to auto-generate.
-    Type: String
-    NoEcho: true
-    Default: ""
+  # --- App settings ---
 
   RequireAdmin:
     Description: >
@@ -282,8 +283,8 @@ Parameters:
   SyncbotPublicUrl:
     Description: >
       Public HTTPS base URL without path (SYNCBOT_PUBLIC_URL). Required when
-      federation is enabled (SyncbotFederationEnabled=true); use the API Gateway
-      stage URL from stack outputs or a custom domain. Leave empty otherwise.
+      federation is enabled (SyncbotFederationEnabled=true); use the Function URL
+      from stack outputs or a custom domain. Leave empty otherwise.
     Type: String
     Default: ""
 
@@ -317,6 +318,16 @@ Parameters:
     Type: String
     Default: ""
 
+  EnableXRay:
+    Description: >
+      Enable AWS X-Ray tracing on Lambda (extra cost beyond free tier).
+      Set ENABLE_XRAY=true in deploy env to turn on.
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+
 # ================================================================
 # Conditions
 # ================================================================
@@ -335,18 +346,16 @@ Conditions:
   UseExistingDatabaseWithCustomPort: !And
     - !Condition UseExistingDatabase
     - !Not [!Equals [!Ref ExistingDatabasePort, ""]]
-  HasTokenEncryptionKeyOverride: !Not [!Equals [!Ref TokenEncryptionKeyOverride, ""]]
-  HasExistingTokenEncryptionKeySecretArn: !Not [!Equals [!Ref ExistingTokenEncryptionKeySecretArn, ""]]
-  HasAppDbPasswordOverride: !Not [!Equals [!Ref AppDbPasswordOverride, ""]]
-  HasNoAppDbPasswordOverride: !Not [!Condition HasAppDbPasswordOverride]
+  RunDbSetup: !Or
+    - !Condition CreateDatabase
+    - !Not [!Equals [!Ref ExistingDatabaseAdminUser, ""]]
   HasSyncbotPublicUrlOverride: !Not [!Equals [!Ref SyncbotPublicUrl, ""]]
   HasPrimaryWorkspace: !Not [!Equals [!Ref PrimaryWorkspace, ""]]
   HasEnableDbReset: !Equals [!Ref EnableDbReset, "true"]
   HasDatabaseTlsExplicit: !Not [!Equals [!Ref DatabaseTlsEnabled, ""]]
   HasDatabaseSslCaPath: !Not [!Equals [!Ref DatabaseSslCaPath, ""]]
-  CreateTokenEncryptionKeySecret: !And
-    - !Not [!Condition HasTokenEncryptionKeyOverride]
-    - !Not [!Condition HasExistingTokenEncryptionKeySecretArn]
+  XRayEnabled: !Equals [!Ref EnableXRay, "true"]
+
 Mappings:
   StagesMap:
     test:
@@ -505,6 +514,11 @@ Resources:
     Condition: CreateDatabaseMysql
     DeletionPolicy: Snapshot
     UpdateReplacePolicy: Snapshot
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - W1011
     Properties:
       DBInstanceIdentifier: !Sub "syncbot-${Stage}-mysql"
       DBInstanceClass: !Ref DatabaseInstanceClass
@@ -512,7 +526,7 @@ Resources:
       # Minor version must match cfn-lint / RDS allowed list (major-only "8.0" fails E3691)
       EngineVersion: "8.0.40"
       MasterUsername: !Sub "sbadmin_${Stage}"
-      ManageMasterUserPassword: true
+      MasterUserPassword: !Ref DatabaseAdminPassword
       DBName: !Ref DatabaseSchema
       AllocatedStorage: 20
       StorageType: gp2
@@ -539,13 +553,18 @@ Resources:
     Condition: CreateDatabasePostgresql
     DeletionPolicy: Snapshot
     UpdateReplacePolicy: Snapshot
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - W1011
     Properties:
       DBInstanceIdentifier: !Sub "syncbot-${Stage}-pg"
       DBInstanceClass: !Ref DatabaseInstanceClass
       Engine: postgres
       EngineVersion: "16.6"
       MasterUsername: !Sub "sbadmin_${Stage}"
-      ManageMasterUserPassword: true
+      MasterUserPassword: !Ref DatabaseAdminPassword
       DBName: !Ref DatabaseSchema
       AllocatedStorage: 20
       StorageType: gp2
@@ -567,47 +586,18 @@ Resources:
         - Key: Name
           Value: !Sub "syncbot-${Stage}-db-pg"
 
-  TokenEncryptionKeySecret:
-    Type: AWS::SecretsManager::Secret
-    Condition: CreateTokenEncryptionKeySecret
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      Name: !Sub "syncbot-${Stage}-token-encryption-key"
-      Description: !Sub "SyncBot ${Stage} token encryption key (backup required)"
-      GenerateSecretString:
-        PasswordLength: 48
-        ExcludePunctuation: true
-        IncludeSpace: false
-
-  # --- DB setup: generated app password and setup Lambda ---
-  AppDbCredentialsSecretGenerated:
-    Type: AWS::SecretsManager::Secret
-    Condition: HasNoAppDbPasswordOverride
-    Properties:
-      Name: !Sub "syncbot-${Stage}-app-db-password"
-      Description: !Sub "SyncBot ${Stage} app DB user password (created by stack)"
-      GenerateSecretString:
-        PasswordLength: 32
-        ExcludePunctuation: true
-        IncludeSpace: false
-
-  AppDbCredentialsSecretProvided:
-    Type: AWS::SecretsManager::Secret
-    Condition: HasAppDbPasswordOverride
-    Properties:
-      Name: !Sub "syncbot-${Stage}-app-db-password"
-      Description: !Sub "SyncBot ${Stage} app DB user password (provided override)"
-      SecretString: !Ref AppDbPasswordOverride
+  # ============================================================
+  # DB Setup (conditional — skipped when DatabaseUser is provided directly)
+  # ============================================================
 
   DbSetupFunction:
     Type: AWS::Serverless::Function
+    Condition: RunDbSetup
     Metadata:
       BuildMethod: makefile
       cfn-lint:
         config:
           ignore_checks:
-            # Parameter ExistingDatabaseLambdaSecurityGroupId is a valid sg-* at deploy time
             - W1030
     Properties:
       CodeUri: db_setup/
@@ -619,24 +609,6 @@ Resources:
       MemorySize: 256
       Policies:
         - AWSLambdaVPCAccessExecutionRole
-        - Version: "2012-10-17"
-          Statement:
-            - Effect: Allow
-              Action:
-                - secretsmanager:GetSecretValue
-                - secretsmanager:PutSecretValue
-              Resource:
-                - !If
-                  - HasAppDbPasswordOverride
-                  - !Ref AppDbCredentialsSecretProvided
-                  - !Ref AppDbCredentialsSecretGenerated
-                - !If
-                  - UseExistingDatabase
-                  - !Ref AWS::NoValue
-                  - !If
-                    - IsMysqlEngine
-                    - !GetAtt RDSInstanceMysql.MasterUserSecret.SecretArn
-                    - !GetAtt RDSInstancePostgres.MasterUserSecret.SecretArn
       VpcConfig: !If
         - UseExistingDatabasePrivateVpc
         - SubnetIds: !Split [",", !Ref ExistingDatabaseSubnetIdsCsv]
@@ -646,6 +618,7 @@ Resources:
 
   AppDbSetup:
     Type: Custom::ExistingRDSSetup
+    Condition: RunDbSetup
     Properties:
       ServiceToken: !GetAtt DbSetupFunction.Arn
       Host: !If
@@ -662,20 +635,10 @@ Resources:
       AdminPassword: !If
         - UseExistingDatabase
         - !Ref ExistingDatabaseAdminPassword
-        - ""
-      AdminSecretArn: !If
-        - UseExistingDatabase
-        - ""
-        - !If
-          - IsMysqlEngine
-          - !GetAtt RDSInstanceMysql.MasterUserSecret.SecretArn
-          - !GetAtt RDSInstancePostgres.MasterUserSecret.SecretArn
+        - !Ref DatabaseAdminPassword
+      AppPassword: !Ref DatabasePassword
       Schema: !Ref DatabaseSchema
       Stage: !Ref Stage
-      SecretArn: !If
-        - HasAppDbPasswordOverride
-        - !Ref AppDbCredentialsSecretProvided
-        - !Ref AppDbCredentialsSecretGenerated
       DatabaseEngine: !Ref DatabaseEngine
       Port: !If
         - UseExistingDatabaseWithCustomPort
@@ -713,6 +676,8 @@ Resources:
           ignore_checks:
             - W1030
     Properties:
+      FunctionUrlConfig:
+        AuthType: NONE
       CodeUri: ../../syncbot/
       Handler: app.handler
       Runtime: python3.12
@@ -729,21 +694,6 @@ Resources:
             - !Ref ExistingDatabaseLambdaSecurityGroupId
         - !Ref AWS::NoValue
       Events:
-        SyncBot:
-          Type: Api
-          Properties:
-            Path: /slack/events
-            Method: post
-        SyncBotInstall:
-          Type: Api
-          Properties:
-            Path: /slack/install
-            Method: get
-        SyncBotOAuthRedirect:
-          Type: Api
-          Properties:
-            Path: /slack/oauth_redirect
-            Method: get
         SyncBotKeepWarm:
           Type: ScheduleV2
           Properties:
@@ -775,23 +725,13 @@ Resources:
               - IsMysqlEngine
               - !GetAtt RDSInstanceMysql.Endpoint.Address
               - !GetAtt RDSInstancePostgres.Endpoint.Address
-          DATABASE_USER: !GetAtt AppDbSetup.Username
-          DATABASE_PASSWORD: !Sub
-            - "{{resolve:secretsmanager:${SecretArn}:SecretString}}"
-            - SecretArn: !If
-                - HasAppDbPasswordOverride
-                - !Ref AppDbCredentialsSecretProvided
-                - !Ref AppDbCredentialsSecretGenerated
+          DATABASE_USER: !If
+            - RunDbSetup
+            - !GetAtt AppDbSetup.Username
+            - !Ref DatabaseUser
+          DATABASE_PASSWORD: !Ref DatabasePassword
           DATABASE_SCHEMA: !Ref DatabaseSchema
-          TOKEN_ENCRYPTION_KEY: !If
-            - HasTokenEncryptionKeyOverride
-            - !Ref TokenEncryptionKeyOverride
-            - !If
-              - HasExistingTokenEncryptionKeySecretArn
-              - !Sub
-                - "{{resolve:secretsmanager:${SecretArn}:SecretString}}"
-                - { SecretArn: !Ref ExistingTokenEncryptionKeySecretArn }
-              - !Sub "{{resolve:secretsmanager:${TokenEncryptionKeySecret}:SecretString}}"
+          DATA_ENCRYPTION_KEY: !Ref DataEncryptionKey
           REQUIRE_ADMIN: !Ref RequireAdmin
           LOG_LEVEL: !Ref LogLevel
           SOFT_DELETE_RETENTION_DAYS: !Sub "${SoftDeleteRetentionDays}"
@@ -833,8 +773,14 @@ Resources:
             Resource: !GetAtt SyncBotFunction.Arn
 
   # ============================================================
-  # CloudWatch Alarms
+  # CloudWatch Logs and Alarms
   # ============================================================
+
+  SyncBotLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${SyncBotFunction}"
+      RetentionInDays: 30
 
   LambdaErrorAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -891,25 +837,6 @@ Resources:
       ComparisonOperator: GreaterThanOrEqualToThreshold
       TreatMissingData: notBreaching
 
-  ApiGateway5xxAlarm:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName: !Sub "syncbot-${Stage}-api-5xx"
-      AlarmDescription: >
-        Fires when the API Gateway returns 5 or more 5xx errors
-        within a 5-minute window.
-      Namespace: AWS/ApiGateway
-      MetricName: 5XXError
-      Dimensions:
-        - Name: ApiName
-          Value: !Ref ServerlessRestApi
-      Statistic: Sum
-      Period: 300
-      EvaluationPeriods: 1
-      Threshold: 5
-      ComparisonOperator: GreaterThanOrEqualToThreshold
-      TreatMissingData: notBreaching
-
 # ================================================================
 # Outputs
 # ================================================================
@@ -920,15 +847,15 @@ Outputs:
     Value: !If
       - HasSyncbotPublicUrlOverride
       - !Ref SyncbotPublicUrl
-      - !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod"
+      - !GetAtt SyncBotFunctionUrl.FunctionUrl
 
   SyncBotApiUrl:
-    Description: API Gateway endpoint URL
-    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/slack/events/"
+    Description: Lambda Function URL endpoint for Slack events
+    Value: !Sub "${SyncBotFunctionUrl.FunctionUrl}slack/events"
 
   SyncBotInstallUrl:
     Description: Slack app installation URL
-    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/slack/install"
+    Value: !Sub "${SyncBotFunctionUrl.FunctionUrl}slack/install"
 
   SyncBotFunctionArn:
     Description: SyncBot Lambda function ARN
@@ -964,13 +891,3 @@ Outputs:
     Condition: CreateDatabase
     Description: VPC ID (only when VPC is created by this stack)
     Value: !Ref VPC
-
-  TokenEncryptionSecretArn:
-    Description: Secrets Manager ARN containing TOKEN_ENCRYPTION_KEY (empty when using TokenEncryptionKeyOverride only)
-    Value: !If
-      - HasExistingTokenEncryptionKeySecretArn
-      - !Ref ExistingTokenEncryptionKeySecretArn
-      - !If
-        - CreateTokenEncryptionKeySecret
-        - !Ref TokenEncryptionKeySecret
-        - ""

@@ -9,7 +9,7 @@ The **upstream** repository ([F3Nation-Community/syncbot](https://github.com/F3N
 | Branch | Role |
 |--------|------|
 | **`main`** | Tracks upstream. Use it to merge PRs and to **sync with the upstream repository** (`git pull upstream main`, etc.). |
-| **`test`** / **`prod`** | On your fork, use these for **deployments**: GitHub Actions deploy workflows run on **push** to `test` and `prod` (see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)). |
+| **`test`** / **`prod`** | On your fork, use these for **deployments**: GitHub Actions deploy workflows run on **push** to `test` and `prod` (see [docs/DEPLOY.md](docs/DEPLOY.md)). |
 
 Typical flow: develop a fix or new feature on a branch in your repo → test and deploy to your infra → open a PR to **`upstream/main`**.
 
@@ -47,4 +47,4 @@ Rules:
 
 ## Questions
 
-Use [GitHub Issues](https://github.com/F3Nation-Community/syncbot/issues) for bugs and feature ideas, or check [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for deploy-related questions.
+Use [GitHub Issues](https://github.com/F3Nation-Community/syncbot/issues) for bugs and feature ideas, or check [docs/DEPLOY.md](docs/DEPLOY.md) for deploy-related questions.

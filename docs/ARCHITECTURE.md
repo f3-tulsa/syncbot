@@ -23,14 +23,14 @@ When a user posts a message in a synced channel, SyncBot replicates it to every 
 sequenceDiagram
     participant U as User (Workspace A)
     participant S as Slack API
-    participant AG as API Gateway
+    participant FU as Lambda Function URL
     participant L as Lambda (SyncBot)
     participant DB as RDS
     participant SB as Slack API (Workspace B)
 
     U->>S: Posts message in #general
-    S->>AG: POST /slack/events
-    AG->>L: Proxy event
+    S->>FU: POST /slack/events
+    FU->>L: Invoke
     L->>L: Assign correlation ID
     L->>L: Acknowledge (ack)
     L->>DB: Look up sync group for channel
@@ -54,8 +54,8 @@ sequenceDiagram
     end
 
     L->>L: Emit metrics (messages_synced)
-    L-->>AG: 200 OK
-    AG-->>S: 200 OK
+    L-->>FU: 200 OK
+    FU-->>S: 200 OK
 ```
 
 The same pattern applies to edits (`chat.update`), deletes (`chat.delete`), thread replies (with `thread_ts`), and reactions (threaded reply with emoji attribution).
@@ -64,7 +64,7 @@ For **federation**, the receiving instance resolves `@` mentions and `#` channel
 
 ## AWS Infrastructure
 
-How to deploy or update this stack (guided script, `sam`, GitHub Actions) is documented in **[DEPLOYMENT.md](DEPLOYMENT.md)**. The diagram below reflects the **reference** SAM template (`infra/aws/template.yaml`).
+How to deploy or update this stack (guided script, `sam`, GitHub Actions) is documented in **[DEPLOY.md](DEPLOY.md)**. The diagram below reflects the **reference** SAM template (`infra/aws/template.yaml`).
 
 ```mermaid
 flowchart TB
@@ -74,7 +74,7 @@ flowchart TB
     end
 
     subgraph AWS["AWS Account"]
-        subgraph APIGW["API Gateway"]
+        subgraph FURL["Lambda Function URL"]
             EP["/slack/events<br>/slack/install<br>/slack/oauth_redirect<br>/api/federation/*"]
         end
 
@@ -99,7 +99,7 @@ flowchart TB
         end
 
         subgraph Monitoring["CloudWatch"]
-            CW["Alarms:<br>Lambda Errors<br>Throttles<br>Duration<br>API 5xx"]
+            CW["Alarms:<br>Lambda Errors<br>Throttles<br>Duration"]
             LG["Logs:<br>Structured JSON<br>Correlation IDs<br>Metrics"]
         end
 
@@ -130,7 +130,7 @@ All infrastructure is defined in `infra/aws/template.yaml` (AWS SAM). Dashed lin
 | **Encryption** | Bot tokens encrypted at rest with Fernet (PBKDF2-derived key, cached to avoid repeated 600K iterations) |
 | **Database** | `pool_pre_ping=True` for stale connection detection, retry decorator on all operations, `dispose()` only after all retries exhausted |
 | **Slack API** | `slack_retry` decorator with exponential backoff, `Retry-After` header support, user profile caching |
-| **Network** | RDS SSL/TLS enforcement, API Gateway throttling (20 burst / 10 sustained), federation HMAC-SHA256 signing with 5-minute replay window |
+| **Network** | RDS SSL/TLS enforcement, Lambda Function URL (IAM `NONE` auth type), federation HMAC-SHA256 signing with 5-minute replay window |
 | **Authorization** | Admin/owner checks on all configuration actions, configurable via `REQUIRE_ADMIN` |
 
 ## Performance & Cost (Home and User Mapping Refresh)
@@ -144,6 +144,6 @@ To keep RDS and Slack API usage low when admins use the **Refresh** button on th
 
 ## Backup, Restore, and Data Migration
 
-- **Full-instance backup** — All tables are dumped as plain JSON (no compression). The payload includes `version`, `exported_at`, `encryption_key_hash` (SHA-256 of `TOKEN_ENCRYPTION_KEY`), and `hmac` (HMAC-SHA256 over canonical JSON). Restore inserts rows in FK order; it is intended for an empty or fresh database (e.g. after an AWS rebuild). On HMAC or encryption-key mismatch, the UI warns but allows proceeding. After restore, Home tab caches (`home_tab_hash`, `home_tab_blocks`) are invalidated for all restored workspaces.
+- **Full-instance backup** — All tables are dumped as plain JSON (no compression). The payload includes `version`, `exported_at`, `encryption_key_hash` (SHA-256 of `DATA_ENCRYPTION_KEY`), and `hmac` (HMAC-SHA256 over canonical JSON). Restore inserts rows in FK order; it is intended for an empty or fresh database (e.g. after an AWS rebuild). On HMAC or encryption-key mismatch, the UI warns but allows proceeding. After restore, Home tab caches (`home_tab_hash`, `home_tab_blocks`) are invalidated for all restored workspaces.
 - **Data migration (workspace-scoped)** — Export produces a JSON file with syncs, sync channels, post meta, user directory, and user mappings keyed by stable identifiers (team_id, sync title, channel_id). The export can include `source_instance` (webhook_url, instance_id, public_key, one-time connection code) so import on the new instance can establish the federation connection and then import in one step. The payload is signed with the instance Ed25519 key; import verifies the signature and warns (but does not block) on mismatch. Import uses replace mode: existing SyncChannels and PostMeta for that workspace in the federated group are removed, then data from the file is created. User mappings are imported where both source and target workspace exist on the new instance. After import, Home tab caches for that workspace are invalidated.
 - **Instance A detection** — When instance B connects to A via federation, B can send optional `team_id` and `workspace_name` in the pair request. A stores them on the `federated_workspaces` row (`primary_team_id`, `primary_workspace_name`) and, if a local workspace with that `team_id` exists, soft-deletes it so the only representation of that workspace on A is the federated connection.

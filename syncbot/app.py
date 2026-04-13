@@ -113,7 +113,7 @@ def _capture_slack_retry_num(req, resp, next):
 def handler(event: dict, context: dict) -> dict:
     """AWS Lambda entry point.
 
-    Receives an API Gateway proxy event.  Federation API paths
+    Receives a Lambda Function URL event.  Federation API paths
     (``/api/federation/*``) are handled directly; everything else
     is delegated to the Slack Bolt request handler.
 
@@ -298,7 +298,7 @@ def run_syncbot_http_server(
     Serves Slack (``bolt_path``), OAuth install/callback, ``/health``, and
     ``/api/federation/*`` when :data:`~constants.FEDERATION_ENABLED` is true.
     Mirrors :class:`slack_bolt.app.app.SlackAppDevelopmentServer` routing with
-    extra paths for production parity with API Gateway + Lambda.
+    extra paths for production parity with Lambda Function URL.
     """
     listen_port = port if port is not None else _http_listen_port()
     _bolt_app = app

@@ -88,16 +88,16 @@ def canonical_json_dumps(obj: dict) -> bytes:
 
 
 def _compute_encryption_key_hash() -> str | None:
-    """SHA-256 hex of TOKEN_ENCRYPTION_KEY, or None if unset."""
-    key = os.environ.get(constants.TOKEN_ENCRYPTION_KEY, "")
+    """SHA-256 hex of DATA_ENCRYPTION_KEY, or None if unset."""
+    key = os.environ.get(constants.DATA_ENCRYPTION_KEY) or os.environ.get(constants._DATA_ENCRYPTION_KEY_LEGACY, "")
     if not key or key == "123":
         return None
     return hashlib.sha256(key.encode()).hexdigest()
 
 
 def _compute_backup_hmac(payload_without_hmac: dict) -> str:
-    """HMAC-SHA256 of canonical JSON of payload (excluding hmac field), keyed by TOKEN_ENCRYPTION_KEY."""
-    key = os.environ.get(constants.TOKEN_ENCRYPTION_KEY, "")
+    """HMAC-SHA256 of canonical JSON of payload (excluding hmac field), keyed by DATA_ENCRYPTION_KEY."""
+    key = os.environ.get(constants.DATA_ENCRYPTION_KEY) or os.environ.get(constants._DATA_ENCRYPTION_KEY_LEGACY, "")
     if not key:
         key = ""
     raw = canonical_json_dumps(payload_without_hmac)

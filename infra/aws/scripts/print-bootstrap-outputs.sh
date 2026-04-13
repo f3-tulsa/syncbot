@@ -34,4 +34,4 @@ echo "AWS_S3_BUCKET       = $(echo "$outputs" | awk -F'\t' '$1=="DeploymentBucke
 echo "AWS_REGION          = $(echo "$outputs" | awk -F'\t' '$1=="BootstrapRegion"{print $2}')"
 echo ""
 echo "Next: deploy the app stack (sam deploy) and set the remaining GitHub vars/secrets."
-echo "TOKEN_ENCRYPTION_KEY is created by the app stack on first deploy — back it up then (see docs/DEPLOYMENT.md)."
+echo "DATA_ENCRYPTION_KEY is created by the deploy script on first deploy — back it up then (see docs/DEPLOY.md)."
