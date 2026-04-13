@@ -9,27 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Deploy script: `--bootstrap`, `--setup-github` (both modes), `CLOUD_PROVIDER` auto-select, `_SM_ID` secret resolution, auto-gen `DATA_ENCRYPTION_KEY`/`DATABASE_PASSWORD`, interactive config save
-- `.env.deploy.example` for cloud deployments (separate from `.env.example`)
-- CI: bootstrap sync, `workflow_dispatch`, concurrency groups, `pip-audit`, `GITHUB_STEP_SUMMARY`
-- CloudWatch Logs 30-day retention; X-Ray tracing now optional
-- `--verbose` deploy receipts with full config, secrets, Slack URLs, and SAM/Terraform parameters
-- AWS: `--update-stack` skips `sam deploy` and uses direct CloudFormation `update-stack`; local and CI deploys **auto-fallback** to `update-stack` when `sam deploy` fails with `EarlyValidation::ResourceExistenceCheck` (generic migration path, not API-Gateway-specific)
+- `--bootstrap`, `--setup-github`, `--update-stack`, `--verbose` deploy flags (both interactive and non-interactive)
+- `GITHUB_REPO` env var to skip interactive repo prompt when multiple remotes exist
+- `.env.deploy.example` template for cloud deployments
+- CI: bootstrap sync, `workflow_dispatch`, concurrency groups, `pip-audit`
+- AWS: auto-fallback to `update-stack` when `sam deploy` fails on changeset validation
+- Deploy summary with OAuth redirect URL, consistent across all paths
 
 ### Changed
 
-- **`TOKEN_ENCRYPTION_KEY` renamed to `DATA_ENCRYPTION_KEY`:** More accurately reflects its use (encrypts OAuth tokens, federation keys, and backup HMAC). SAM parameter is `DataEncryptionKey`; Terraform variable is `data_encryption_key`. Legacy `TOKEN_ENCRYPTION_KEY` env var still accepted as fallback.
-- **Database deploy naming:** User-facing env files, GitHub environment variables, and docs use unprefixed `DATABASE_*` names instead of `EXISTING_DATABASE_*`. CloudFormation `ExistingDatabase*` and Terraform `existing_db_*` identifiers are unchanged. Deploy scripts still honor legacy `EXISTING_DATABASE_*` env vars. Interactive deploy applies the same alias layer as the `--env` path; non-interactive AWS `--setup-github` pushes the full external-DB variable set for CI parity.
-- AWS: Lambda Function URLs replace API Gateway; Secrets Manager removed (secrets via SAM `NoEcho` params)
-- GCP: Secret Manager removed (secrets via sensitive Terraform variables)
-- `DbSetup` conditional — skipped when `DATABASE_USER` + `DATABASE_PASSWORD` provided directly
-- `.env.example` simplified for local dev (default SQLite)
-- Docs: `DEPLOYMENT.md` renamed to `DEPLOY.md`
+- AWS: Lambda Function URLs replace API Gateway; Secrets Manager removed
+- GCP: Secret Manager removed (secrets via Terraform variables)
+- `TOKEN_ENCRYPTION_KEY` renamed to `DATA_ENCRYPTION_KEY` (legacy fallback kept)
+- Deploy env vars simplified: `DATABASE_*` replaces `EXISTING_DATABASE_*`
+- `DATABASE_USER` is a GitHub environment variable, not a secret
+- `DatabaseSchema` convention (`syncbot_<stage>`) documented in prompts, example, and docs
+- `DbSetup` skipped when `DATABASE_USER` + `DATABASE_PASSWORD` provided directly
+- Bumped GitHub Actions dependencies (`checkout` v6, `setup-python` v6, etc.)
 
-### Removed
+### Fixed
 
-- AWS API Gateway and Secrets Manager resources
-- GCP Secret Manager resources
+- Interactive GitHub push: Lambda SG ID and `SLACK_CLIENT_ID` now set correctly
+- CI script: log group cleanup output to stderr; defensive `mkdir` before `sam package`
 
 ## [1.0.2] - 2026-03-28
 
