@@ -362,6 +362,16 @@ prompt_github_repo_for_actions() {
   canon="$(mktemp)"
   tmp="$(mktemp)"
 
+  if [[ -n "${GITHUB_REPO:-}" ]]; then
+    if [[ "$GITHUB_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+      echo "Using GitHub repository: $GITHUB_REPO (from GITHUB_REPO env var)" >&2
+      _cr_done
+      echo "$GITHUB_REPO"
+      return 0
+    fi
+    echo "Warning: GITHUB_REPO is set but invalid (expected owner/repo); ignoring." >&2
+  fi
+
   if ! git -C "$git_dir" rev-parse --git-dir >/dev/null 2>&1; then
     echo "Not a git checkout; enter GitHub owner/repo manually." >&2
     while true; do

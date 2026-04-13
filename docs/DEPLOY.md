@@ -27,6 +27,8 @@ The launcher discovers `infra/<provider>/scripts/deploy.sh`, shows a numbered me
 
 **GitHub setup:** Add `--setup-github` to push config to GitHub environment variables and secrets after deploy. Works with both `--env` (non-interactive) and interactive modes: `./deploy.sh --env test --setup-github aws` or `./deploy.sh --setup-github aws`.
 
+Set **`GITHUB_REPO=owner/repo`** in your local `.env.deploy.<stage>` (or export it) to skip the prompt when multiple git remotes exist (fork vs upstream). This variable is local only and is not pushed to GitHub.
+
 **Verbose output:** Add `--verbose` for extended deploy receipts (SAM/Terraform parameters, inline Slack manifest) and extra screen output during deploy — useful for debugging deploy issues: `./deploy.sh --env test --verbose aws`.
 
 **Force `update-stack` (AWS):** Set `UPDATE_STACK=true` in `.env.deploy.<stage>` or pass **`--update-stack`** on `./deploy.sh` to skip `sam deploy` and use direct CloudFormation `update-stack` (optional; the AWS script normally auto-retries after an `EarlyValidation::ResourceExistenceCheck` changeset failure).
