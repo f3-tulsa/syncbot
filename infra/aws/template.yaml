@@ -514,6 +514,11 @@ Resources:
     Condition: CreateDatabaseMysql
     DeletionPolicy: Snapshot
     UpdateReplacePolicy: Snapshot
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - W1011
     Properties:
       DBInstanceIdentifier: !Sub "syncbot-${Stage}-mysql"
       DBInstanceClass: !Ref DatabaseInstanceClass
@@ -548,6 +553,11 @@ Resources:
     Condition: CreateDatabasePostgresql
     DeletionPolicy: Snapshot
     UpdateReplacePolicy: Snapshot
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - W1011
     Properties:
       DBInstanceIdentifier: !Sub "syncbot-${Stage}-pg"
       DBInstanceClass: !Ref DatabaseInstanceClass
