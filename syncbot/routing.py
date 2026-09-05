@@ -15,12 +15,10 @@ import handlers
 from slack import actions
 
 ACTION_MAPPER = {
-    actions.CONFIG_MANAGE_USER_MAPPING: builders.build_user_matching_entry,
-    actions.CONFIG_MANAGE_USER_MATCHING: builders.build_user_matching_entry,
+    actions.CONFIG_MANAGE_USER_MAPPING: builders.build_user_mapping_entry,
     actions.CONFIG_USER_MAPPING_EDIT: builders.build_user_mapping_edit_modal,
     actions.CONFIG_USER_MAPPING_REFRESH: handlers.handle_user_mapping_refresh,
-    actions.CONFIG_USER_MAPPING_AUTO_MAP: handlers.handle_user_mapping_auto_match,
-    actions.CONFIG_USER_MAPPING_AUTO_MATCH: handlers.handle_user_mapping_auto_match,
+    actions.CONFIG_USER_MAPPING_AUTO_MAP: handlers.handle_user_mapping_auto_map,
     actions.CONFIG_USER_MAPPING_PAGE_PREV: handlers.handle_user_mapping_page,
     actions.CONFIG_USER_MAPPING_PAGE_NEXT: handlers.handle_user_mapping_page,
     actions.CONFIG_CREATE_GROUP: handlers.handle_create_group,

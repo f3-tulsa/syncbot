@@ -40,6 +40,6 @@ When a channel sync includes a federated workspace, this instance POSTs to the p
 | `member_joined_channel` | `handle_member_joined_channel` | Detects when SyncBot is added to an unconfigured channel; posts a message and leaves. |
 | `message.channels` / `message.groups` | `respond_to_message_event` | Fires on new messages, thread broadcasts, `/me`, edits, deletes, and file shares in public/private channels. |
 | `reaction_added` / `reaction_removed` | `_handle_reaction` | Syncs emoji reactions to linked channels; skips user-token echo events SyncBot applied on the destination. |
-| `team_join` | `handle_team_join` | Fires when a new user joins a connected workspace. Adds the user to the directory and re-checks unmatched user mappings. |
+| `team_join` | `handle_team_join` | Fires when a new user joins a connected workspace. Adds the user to the directory and re-checks unmapped user mappings. |
 | `tokens_revoked` | `handle_tokens_revoked` | User-token revoke: Bolt `delete_installation` for that person, then republish Home. A `tokens.bot` array is treated as uninstall only when the stored bot token fails `auth.test`. |
 | `user_profile_changed` | `handle_user_profile_changed` | Detects display name or email changes and updates the user directory and mappings. |

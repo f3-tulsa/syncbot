@@ -20,7 +20,6 @@ from helpers.user_action_echo import reaction_echo_fingerprint, remember_user_ac
 _logger = logging.getLogger(__name__)
 
 ApplyResult = Literal["direct", "thread", "skipped", "failed"]
-_slack_error_code = slack_error_code
 
 
 def reaction_direction(sync_channel: schemas.SyncChannel | None) -> str:
@@ -211,7 +210,7 @@ def _dest_reaction_name_is_invalid(
     try:
         bot_client.reactions_add(channel=channel_id, timestamp=target_ts, name=reaction)
     except SlackApiError as exc:
-        error_code = _slack_error_code(exc)
+        error_code = slack_error_code(exc)
         if error_code == "invalid_name":
             result = True
         elif error_code in _IDEMPOTENT_ADD_ERRORS:
@@ -230,7 +229,7 @@ def _dest_reaction_name_is_invalid(
     except SlackApiError as exc:
         _logger.debug(
             "reaction_name_probe_remove_failed",
-            extra={"channel_id": channel_id, "error": _slack_error_code(exc) or str(exc)},
+            extra={"channel_id": channel_id, "error": slack_error_code(exc) or str(exc)},
         )
     if cache is not None:
         cache[cache_key] = False
@@ -341,7 +340,7 @@ def apply_reaction_to_target(
                     )
             return "direct", None
         except SlackApiError as exc:
-            error_code = _slack_error_code(exc)
+            error_code = slack_error_code(exc)
             if action == "remove":
                 ws_id = event_workspace_id if event_workspace_id is not None else target_workspace.id
                 actor_user = source_user_id or resolved_user

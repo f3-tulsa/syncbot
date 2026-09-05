@@ -83,7 +83,7 @@ from handlers.sync import (
 from handlers.tokens import handle_app_uninstalled, handle_tokens_revoked
 from handlers.users import (
     handle_team_join,
-    handle_user_mapping_auto_match,
+    handle_user_mapping_auto_map,
     handle_user_mapping_edit_submit,
     handle_user_mapping_page,
     handle_user_mapping_refresh,
@@ -154,7 +154,7 @@ __all__ = [
     "handle_tokens_revoked",
     "handle_app_uninstalled",
     "handle_unpublish_channel",
-    "handle_user_mapping_auto_match",
+    "handle_user_mapping_auto_map",
     "handle_user_mapping_edit_submit",
     "handle_user_mapping_page",
     "handle_user_mapping_refresh",

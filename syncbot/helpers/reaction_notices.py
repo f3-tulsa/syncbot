@@ -15,7 +15,6 @@ from helpers.slack_api import slack_error_code
 from helpers.user_action_echo import slack_message_ts
 
 _logger = logging.getLogger(__name__)
-_slack_error_code = slack_error_code
 
 
 def actor_key_for_notice(
@@ -80,7 +79,7 @@ def chat_delete_notice(client: WebClient, channel_id: str, ts: float | str) -> N
     try:
         client.chat_delete(channel=channel_id, ts=slack_message_ts(ts))
     except SlackApiError as exc:
-        if _slack_error_code(exc) == "message_not_found":
+        if slack_error_code(exc) == "message_not_found":
             return
         raise
 
@@ -223,7 +222,7 @@ def _delete_leftover_thread_notices(
     except SlackApiError as exc:
         _logger.debug(
             "leftover_notice_thread_scan_failed",
-            extra={"channel_id": channel_id, "error": _slack_error_code(exc) or str(exc)},
+            extra={"channel_id": channel_id, "error": slack_error_code(exc) or str(exc)},
         )
         return
 

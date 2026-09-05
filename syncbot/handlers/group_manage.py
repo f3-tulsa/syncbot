@@ -574,8 +574,8 @@ def handle_disband_group(
                     f"\u2022 Delete {len(syncs)} Channel Sync(s) covering {channel_count} Channel(s)\n"
                     "\u2022 Delete the synced message history for those Channels\n"
                     "\u2022 Delete every user mapping scoped to this group\n\n"
-                    "_User mappings took auto-matching and manual edits to build. If you re-create "
-                    "this group later, those matches have to be established again._"
+                    "_User mappings took Auto Map Now and manual edits to build. If you re-create "
+                    "this group later, those mappings have to be established again._"
                 ),
             ),
             orm.ActionsBlock(

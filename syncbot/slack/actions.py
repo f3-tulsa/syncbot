@@ -12,9 +12,6 @@ place avoids typos and makes refactoring easier.
 CONFIG_MANAGE_USER_MAPPING = "manage_user_mapping"
 """Action: user clicked "User Mapping" button on the Home tab."""
 
-CONFIG_MANAGE_USER_MATCHING = "manage_user_matching"
-"""Leftover action id; same handler as CONFIG_MANAGE_USER_MAPPING."""
-
 CONFIG_USER_MAPPING_MODAL = "user_mapping_modal"
 """Callback: User Mapping list modal (Close only; no submit)."""
 
@@ -35,9 +32,6 @@ CONFIG_USER_MAPPING_REFRESH = "user_mapping_refresh"
 
 CONFIG_USER_MAPPING_AUTO_MAP = "user_mapping_auto_map"
 """Action: run directory auto-map for this workspace. Must not share the edit prefix."""
-
-CONFIG_USER_MAPPING_AUTO_MATCH = "user_mapping_auto_match"
-"""Leftover action id; same handler as CONFIG_USER_MAPPING_AUTO_MAP."""
 
 CONFIG_USER_MAPPING_PAGE_PREV = "user_mapping_page_prev"
 """Action: previous page in the User Mapping modal. Must not share the edit prefix."""
