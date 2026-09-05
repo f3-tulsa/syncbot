@@ -19,56 +19,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Synced message #channel mentions become a code-ticked `#name (Workspace)`, not a dest twin or a deep link
+- Synced message `#channel` mentions become a code-ticked `#name (Workspace)`, not a dest twin or a deep link
 
 ### Fixed
 
-- Federation pair, unpair, and restore invalidate the federated-sync cache
-- Block Kit rich_text user mentions follow the same mapping rules as mrkdwn
-- Source message permalinks keep a labeled source URL that opens in the Slack mobile app
-- Federation inbound mentions skip none-map stubs
-- Dest Block Kit posts are trimmed to Slack's 50-block and 3000-character section limits
-- Mentions beyond the first fifty no longer fail the dest post
-- Threaded file shares use the matching dest timestamp when Slack returns several shares
-- AWS update-stack fallback keeps previous secrets when a parameter is empty
-- GCP Terraform and deploy default the schema to `syncbot_${stage}`
-- GCP deploy passes Slack bot and user scopes from env
+- Mentions, source permalinks, and federation inbound follow the same mapping rules
+- Dest Block Kit posts stay within Slack's block and section limits
+- Threaded file shares use the matching dest timestamp
+- AWS and GCP deploy keep previous secrets, default `syncbot_${stage}`, and pass Slack scopes from env
 
 ## [1.5.1] - 2026-09-03
 
 ### Changed
 
-- User Mapping uses map wording and a 20-row modal page
-- Auto Map Now stores last_auto_map on workspace settings
-- Federation instance id is a SHA-256 fingerprint of the Ed25519 public key
-- Federation connection codes carry the peer's full endpoint URL, not a hardcoded path
-- Sync hot paths reuse per-request caches for user tokens, mappings, and channel names
-- Admin ids and federated sync lookups use the 60s process cache
-- Federation retries a timed-out request without an extra backoff sleep
+- User Mapping uses map wording, a 20-row page, and `last_auto_map`
+- Federation instance id is a SHA-256 fingerprint of the Ed25519 public key; connection codes carry the peer's full endpoint URL
+- Sync hot paths reuse per-request and 60s process caches
 
 ### Fixed
 
-- Also-send-to-channel thread replies sync with dest reply_broadcast
-- Hosted files of any type sync on the same instance
-- File shares skip tombstoned and access-restricted attachments
-- Caption-only file shares post as one message at the correct thread level so thread replies on the file sync
-- Block Kit bot posts (preblasts and similar) keep newlines and emoji; Slack's truncated text fallback is not used
-- File shares name the author in code ticks as a bot notice and never tag them
-- Unmapped mention fallbacks use the same code-ticked display name as file shares (no @ or brackets)
-- Top-level text-plus-file shares also send the threaded file notice to the channel via chat.update reply_broadcast
-- Mapping ensure uses dest directory email then one lookupByEmail and persists a none stub
-- Federation connection codes include a signed webhook URL
-- Federation thread and edit payloads include public image blocks
-- Federation accepts lowercased headers and base64 bodies on Lambda Function URLs
-- Federated mention rewriting and directory exchange no longer query per user
-- The public origin persists in settings, so connection codes survive a cold start
-- User info is cached per bot token, so a warm container cannot mix workspaces
-- Partial sync failures log as warnings; reactions on unsynced messages log as debug
-- Lambda returns 404 for federation when Settings federation is off
-- Alembic MySQL column CHANGE includes the existing type
-- AWS deploy fails when Lambda migrate returns FunctionError
-- Lambda function timeout is 120s so post-deploy migrate can finish
-- Leftover SYNCBOT_INSTANCE_ID is ignored
+- Also-send-to-channel replies, hosted files, and file shares sync at the right thread level
+- Block Kit bot posts keep newlines and emoji; unmapped mentions use a code-ticked display name
+- On-the-fly mapping uses dest directory email then one `lookupByEmail` and persists a none stub
+- Federation connection codes, image blocks, Lambda Function URLs, and mention rewrite work across instances
+- AWS migrate reports FunctionError, Lambda timeout is 120s, and MySQL column CHANGE includes the existing type
+- Leftover `SYNCBOT_INSTANCE_ID` is ignored
 
 ## [1.5.0] - 2026-09-02
 
@@ -113,10 +88,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Leftover `SYNCBOT_FEDERATION_ENABLED` is ignored after a one-time upgrade seed
 - Settings is available on every workspace for Slack admins; instance fields stay primary-only
-- Leftover `REQUIRE_ADMIN` and `ALLOW_PRIVATE_CHANNELS` env vars are ignored
-- Leftover instance-wide private-channel policy is copied to each workspace on upgrade
+- Leftover `SYNCBOT_FEDERATION_ENABLED`, `REQUIRE_ADMIN`, and `ALLOW_PRIVATE_CHANNELS` env is ignored; a one-time seed copies federation and private-channel policy
 
 ### Fixed
 
@@ -193,56 +166,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Repair channel unpublish and publisher teardown (#25)
-
-
+- Channel unpublish and publisher teardown no longer leave a broken sync
 
 ## [1.2.5] - 2026-08-30
 
 ### Fixed
 
-- Authorize group invite accept, decline, and cancel (#24)
-
-
+- Group invite accept, decline, and cancel require authorization
 
 ## [1.2.4] - 2026-08-30
 
 ### Fixed
 
-- Trust GitHub's immutable OIDC subject claim (#22)
-
-
+- GitHub Actions trusts the immutable OIDC subject claim
 
 ## [1.2.3] - 2026-08-30
 
 ### Fixed
 
-- Build Lambda in source so SAM can reach syncbot/ (#21)
-
-
+- Lambda builds from source so SAM can reach `syncbot/`
 
 ## [1.2.2] - 2026-08-30
 
 ### Changed
 
-- Cloud deploy uses `DATABASE_BACKEND` (`mysql` / `postgresql` / `sqlite`); old alias names warn until 2.0.0
-- Provider knobs are `AWS_*` / `GCP_*`; GitHub Actions picks a provider with `GITHUB_DEPLOY_TARGET`
-- `./deploy.sh` reads `CLOUD_PROVIDER` from the env file; there is no `aws` or `gcp` command-line argument
-- AWS GitHub Actions sets stage from the job (`test` or `prod`) instead of a `STAGE_NAME` variable
-- The first AWS deploy creates the bootstrap stack when it is missing
-- GCP GitHub Actions stays image-only and prints Slack install / OAuth / event URLs in the job summary
+- Cloud deploy uses `DATABASE_BACKEND` and `CLOUD_PROVIDER`; leftover alias names warn until 2.0.0
+- GitHub Actions picks provider and stage from the job; the first AWS deploy creates the bootstrap stack
 - First-time deploy docs and `.env.deploy.example` match the AWS and GCP paths
-- AWS region default is `us-east-1`
 
 ### Fixed
 
-- `./deploy.sh` no longer looks up leftover Secrets Manager / Secret Manager IDs
+- `./deploy.sh` no longer looks up leftover Secrets Manager IDs
 
 ## [1.2.1] - 2026-08-27
 
 ### Fixed
 
-- Drop AWS stack RDS and add SQLite Litestream to S3 (#17)
+- AWS stack no longer creates RDS; SQLite + Litestream replicas go to S3
 
 ## [1.2.0] - 2026-08-27
 
@@ -265,49 +225,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `--bootstrap`, `--setup-github`, `--update-stack`, `--verbose` deploy flags (both interactive and non-interactive)
-- `GITHUB_REPO` env var to skip interactive repo prompt when multiple remotes exist
-- `.env.deploy.example` template for cloud deployments
-- CI: bootstrap sync, `workflow_dispatch`, concurrency groups, `pip-audit`
-- AWS: auto-fallback to `update-stack` when `sam deploy` fails on changeset validation
-- Deploy summary with OAuth redirect URL, consistent across all paths
+- Deploy flags (`--bootstrap`, `--setup-github`, `--update-stack`, `--verbose`), `.env.deploy.example`, and a summary with the OAuth redirect URL
+- CI bootstrap sync, `workflow_dispatch`, concurrency groups, and `pip-audit`
 
 ### Changed
 
-- AWS: Lambda Function URLs replace API Gateway; Secrets Manager removed
-- GCP: Secret Manager removed (secrets via Terraform variables)
+- AWS uses Lambda Function URLs (no API Gateway or Secrets Manager); GCP secrets are Terraform variables
 - `TOKEN_ENCRYPTION_KEY` renamed to `DATA_ENCRYPTION_KEY` (legacy fallback kept)
-- Deploy env vars simplified: `DATABASE_*` replaces `EXISTING_DATABASE_*`
-- `DATABASE_USER` is a GitHub environment variable, not a secret
-- `DatabaseSchema` convention (`syncbot_<stage>`) documented in prompts, example, and docs
-- `DbSetup` skipped when `DATABASE_USER` + `DATABASE_PASSWORD` provided directly
-- Bumped GitHub Actions dependencies (`checkout` v6, `setup-python` v6, etc.)
+- Deploy env uses `DATABASE_*`; `DATABASE_USER` is a GitHub variable, not a secret
 
 ### Fixed
 
-- Interactive GitHub push: Lambda SG ID and `SLACK_CLIENT_ID` now set correctly
-- CI script: log group cleanup output to stderr; defensive `mkdir` before `sam package`
+- Interactive GitHub push sets Lambda SG ID and `SLACK_CLIENT_ID` correctly
 
 ## [1.0.2] - 2026-03-28
 
 ### Added
 
-- External DB deploy parameters: `ExistingDatabasePort`, `ExistingDatabaseCreateAppUser`, `ExistingDatabaseCreateSchema`, `ExistingDatabaseUsernamePrefix`, `ExistingDatabaseAppUsername` (AWS) / GCP equivalents — support TiDB Cloud and other managed DB providers with cluster-prefixed usernames and 32-char limits
+- External DB deploy parameters for TiDB Cloud and other managed providers (cluster-prefixed usernames, 32-char limits)
 
 ### Changed
 
-- Synced message author shows local display name and avatar for mapped users, including federated messages (no workspace suffix)
-- Shortened default DB usernames: `sbadmin_{stage}` (was `syncbot_admin_{stage}`), `sbapp_{stage}` (was `syncbot_user_{stage}`). Existing RDS instances keep their original master username.
-- Bumped GitHub Actions: `actions/checkout` v6, `actions/setup-python` v6, `actions/upload-artifact` v7, `actions/download-artifact` v8, `aws-actions/configure-aws-credentials` v6
-- Dependabot: ignore semver-major updates for the Docker `python` image (keeps base image on Python 3.12.x line)
-- AWS Lambda: Alembic migrations now run via a post-deploy invoke instead of on every cold start, fixing Slack ack timeouts after deployment; Cloud Run and local dev unchanged
-- AWS Lambda memory increased from 128 MB to 256 MB for faster cold starts
-- EventBridge keep-warm invokes now return a clean JSON response instead of falling through to Slack Bolt
-- AWS bootstrap deploy policy: added `lambda:InvokeFunction` -- **re-run the deploy script (Bootstrap task) or `aws cloudformation deploy` the bootstrap stack to pick up this permission**
-
-### Fixed
-
-- Replaced deprecated `datetime.utcnow()` with `datetime.now(UTC)` in backup/migration export helpers
+- Synced message author shows the local display name and avatar for mapped users
+- Default DB usernames shortened to `sbadmin_{stage}` and `sbapp_{stage}`; existing RDS master names stay
+- AWS Lambda migrations run once post-deploy (not on cold start); memory is 256 MB; re-run bootstrap for `lambda:InvokeFunction`
 
 ## [1.0.1] - 2026-03-26
 
