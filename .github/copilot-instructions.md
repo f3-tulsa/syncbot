@@ -34,7 +34,7 @@ Do not show Slack API scope names on **Authorize SyncBot**. Add new user scopes 
 
 ## Gotchas (short)
 
-- Route handlers through `routing.py` only — do not add `@app.action` / `@app.event`.
+- Route handlers through `routing.py` only — do not add `@app.action` / `@app.event`. When renaming an `action_id` or handler, update the constant, Block Kit id, handler, and single mapper row together; do not keep leftover action ids for in-flight clicks (reopen Home/modal is enough). Leftover env still warn-and-coalesce; old backup keys still import.
 - Inside `helpers/*.py`, import submodules only (`from helpers._cache import …`); never `import helpers`.
 - `DbManager.get_record` uses each model's `get_id()` (e.g. `Workspace` → Slack `team_id`), not always the integer PK. Only positional or `id=`.
 - Federation on/off is `helpers.federation_enabled()` (Settings DB), not env. Leftover `SYNCBOT_FEDERATION_ENABLED` is warned and ignored after a one-time upgrade seed. Leftover `REQUIRE_ADMIN` and `SYNCBOT_INSTANCE_ID` are warned and ignored.

@@ -58,7 +58,7 @@ def handle_team_join(
     )
 
     helpers._upsert_single_user_to_directory(user_data, workspace_record.id)
-    # ``user_auto_match_complete`` is the single INFO summary (do not also log team_join_matching).
+    # ``user_auto_map_complete`` is the single INFO summary (do not also log team_join mapping).
     helpers.run_auto_map_for_workspace(client, workspace_record.id)
 
 
@@ -139,7 +139,7 @@ def handle_user_mapping_refresh(
     logger: Logger,
     context: dict,
 ) -> None:
-    """Reload the User Mapping modal from the DB (no crawl, no match)."""
+    """Reload the User Mapping modal from the DB (no crawl, no map)."""
     auth_result = _get_authorized_workspace(body, client, context, "user_mapping_refresh")
     if not auth_result:
         return
@@ -153,14 +153,14 @@ def handle_user_mapping_refresh(
     update_user_mapping_modal(client, view_id, workspace_record, group_id=group_id, page=page, context=context)
 
 
-def handle_user_mapping_auto_match(
+def handle_user_mapping_auto_map(
     body: dict,
     client: WebClient,
     logger: Logger,
     context: dict,
 ) -> None:
-    """Seed + directory auto-match, then update the open modal with results."""
-    auth_result = _get_authorized_workspace(body, client, context, "user_mapping_auto_match")
+    """Seed + directory auto-map, then update the open modal with results."""
+    auth_result = _get_authorized_workspace(body, client, context, "user_mapping_auto_map")
     if not auth_result:
         return
     _user_id, workspace_record = auth_result
@@ -179,7 +179,7 @@ def handle_user_mapping_auto_match(
             group_id=group_id,
             page=page,
             context=context,
-            matching=True,
+            mapping_in_progress=True,
         )
         return
 
@@ -191,7 +191,7 @@ def handle_user_mapping_auto_match(
         group_id=group_id,
         page=page,
         context=context,
-        matching=True,
+        mapping_in_progress=True,
     )
 
     newly_matched = 0
@@ -213,7 +213,7 @@ def handle_user_mapping_auto_match(
         helpers._cache_delete_prefix(f"home_tab_blocks:{workspace_record.team_id}")
     except Exception as exc:
         _logger.warning(
-            "user_mapping_auto_match_failed",
+            "user_mapping_auto_map_failed",
             extra={"workspace_id": workspace_record.id, "error": str(exc)},
         )
     finally:
@@ -296,7 +296,7 @@ def handle_user_mapping_edit_submit(
             {
                 schemas.UserMapping.target_user_id: None,
                 schemas.UserMapping.map_method: "none",
-                schemas.UserMapping.matched_at: now,
+                schemas.UserMapping.mapped_at: now,
             },
         )
         _logger.info("user_mapping_removed", extra={"mapping_id": mapping.id})
@@ -330,7 +330,7 @@ def handle_user_mapping_edit_submit(
             {
                 schemas.UserMapping.target_user_id: selected,
                 schemas.UserMapping.map_method: "manual",
-                schemas.UserMapping.matched_at: now,
+                schemas.UserMapping.mapped_at: now,
             },
         )
         _logger.info("user_mapping_updated", extra={"mapping_id": mapping.id, "target_user_id": selected})

@@ -125,12 +125,8 @@ WARNING_BLOCK = "WARNING_BLOCK"
 USER_MAP_TTL_EMAIL = 30 * 24 * 3600  # 30 days for email-confirmed mappings
 USER_MAP_TTL_NAME = 14 * 24 * 3600  # 14 days for name-based mappings
 USER_MAP_TTL_NONE = 90 * 24 * 3600  # 90 days for no-map (team_join handles re-checks)
-MATCH_TTL_EMAIL = USER_MAP_TTL_EMAIL  # leftover alias
-MATCH_TTL_NAME = USER_MAP_TTL_NAME  # leftover alias
-MATCH_TTL_NONE = USER_MAP_TTL_NONE  # leftover alias
 USER_DIR_REFRESH_TTL = 24 * 3600  # 24 hours per workspace directory refresh
 USER_MAPPING_PAGE_SIZE = 20  # max mapping rows per modal page (Slack 100-block cap)
-USER_MATCHING_PAGE_SIZE = USER_MAPPING_PAGE_SIZE  # leftover alias
 
 # Refresh button cooldown (seconds) when content hash unchanged
 REFRESH_COOLDOWN_SECONDS = 60
@@ -240,6 +236,24 @@ _REQUIRED_PRODUCTION = [
 # Minimum length for DATA_ENCRYPTION_KEY in production (reject weak/placeholder values).
 _DATA_ENCRYPTION_KEY_MIN_LEN = 16
 _DATA_ENCRYPTION_KEY_PLACEHOLDERS = frozenset({"123", "changeme", "secret", "password"})
+_TOKEN_ENCRYPTION_KEY_WARNED = False
+
+
+def _warn_token_encryption_key_leftover() -> None:
+    """Warn once per process when the leftover TOKEN_ENCRYPTION_KEY env is set."""
+    global _TOKEN_ENCRYPTION_KEY_WARNED
+    if _TOKEN_ENCRYPTION_KEY_WARNED:
+        return
+    raw = os.environ.get(_DATA_ENCRYPTION_KEY_LEGACY)
+    if raw is None or str(raw).strip() == "":
+        return
+    _TOKEN_ENCRYPTION_KEY_WARNED = True
+    _logger.warning(
+        "%s is deprecated; set %s instead (still used when %s is unset)",
+        _DATA_ENCRYPTION_KEY_LEGACY,
+        DATA_ENCRYPTION_KEY,
+        DATA_ENCRYPTION_KEY,
+    )
 
 
 def _encryption_active() -> bool:
@@ -249,6 +263,7 @@ def _encryption_active() -> bool:
     In non-local environments the key must be set, at least _DATA_ENCRYPTION_KEY_MIN_LEN
     characters, and not a known placeholder. Local dev can use any value or leave unset.
     """
+    _warn_token_encryption_key_leftover()
     key = (os.environ.get(DATA_ENCRYPTION_KEY) or os.environ.get(_DATA_ENCRYPTION_KEY_LEGACY) or "").strip()
     if not key or len(key) < _DATA_ENCRYPTION_KEY_MIN_LEN:
         return False
@@ -262,6 +277,7 @@ def validate_config() -> None:
     rather than silently misbehaving.  In local development it only warns.
     DB requirements depend on DATABASE_BACKEND (postgresql, mysql, or sqlite).
     """
+    _warn_token_encryption_key_leftover()
     required = list(_REQUIRED_ALWAYS_NON_DB) + list(get_required_db_vars())
     if not LOCAL_DEVELOPMENT:
         required.extend(_REQUIRED_PRODUCTION)

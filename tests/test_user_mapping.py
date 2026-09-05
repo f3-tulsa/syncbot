@@ -12,23 +12,23 @@ os.environ.setdefault("DATABASE_SCHEMA", "syncbot")
 os.environ.setdefault("SLACK_BOT_TOKEN", "xoxb-0-0")
 
 from builders.user_mapping import (  # noqa: E402
+    build_user_mapping_entry,
     build_user_mapping_list_blocks,
-    build_user_matching_entry,
 )
 from handlers.channel_sync import handle_publish_channel_submit_work  # noqa: E402
 from handlers.groups import _activate_group_membership  # noqa: E402
 from handlers.users import (  # noqa: E402
-    handle_user_mapping_auto_match,
+    handle_user_mapping_auto_map,
     handle_user_mapping_edit_submit,
     handle_user_mapping_refresh,
 )
 from helpers.user_map import (  # noqa: E402
-    _find_user_match,
-    _match_from_directory,
+    _find_user_map,
+    _map_from_directory,
     ensure_mapped_target_user_id,
-    format_last_auto_match_line,
+    format_last_auto_map_line,
     get_display_name_and_icon_for_synced_message,
-    run_auto_match_for_workspace,
+    run_auto_map_for_workspace,
     seed_user_mappings,
 )
 from slack.orm import BlockView  # noqa: E402
@@ -36,7 +36,7 @@ from tests.event_fixtures import make_event_context  # noqa: E402
 
 
 class TestDirectoryEmailMatch:
-    def test_email_match_from_directory_rows_without_client(self):
+    def test_email_map_from_directory_rows_without_client(self):
         source = {"email": "Same@Example.com", "real_name": "Ada", "display_name": "Ada"}
         target = SimpleNamespace(
             slack_user_id="U_TARGET",
@@ -46,11 +46,11 @@ class TestDirectoryEmailMatch:
             normalized_name="Ada",
         )
         by_email = {"same@example.com": [target]}
-        uid, method = _match_from_directory(source, [target], by_email)
+        uid, method = _map_from_directory(source, [target], by_email)
         assert uid == "U_TARGET"
         assert method == "email"
 
-    def test_find_user_match_skips_lookup_when_directory_has_email(self):
+    def test_find_user_map_skips_lookup_when_directory_has_email(self):
         source = {"email": "a@ex.com", "real_name": "A", "display_name": "A"}
         target = SimpleNamespace(
             slack_user_id="U2",
@@ -60,7 +60,7 @@ class TestDirectoryEmailMatch:
             normalized_name="A",
         )
         client = MagicMock()
-        uid, method = _find_user_match(
+        uid, method = _find_user_map(
             "U1",
             source,
             client,
@@ -97,7 +97,7 @@ class TestSeedWithoutPartnerCrawl:
         assert row.target_workspace_id == 2
         assert row.map_method == "none"
 
-    def test_auto_match_does_not_refresh_directory(self):
+    def test_auto_map_does_not_refresh_directory(self):
         mapping = SimpleNamespace(
             id=1,
             source_workspace_id=1,
@@ -125,7 +125,7 @@ class TestSeedWithoutPartnerCrawl:
                 "real_name": "Ada",
                 "display_name": "Ada",
             }
-            newly, still = run_auto_match_for_workspace(None, 2, seeded=1)
+            newly, still = run_auto_map_for_workspace(None, 2, seeded=1)
 
         assert newly == 1
         assert still == 0
@@ -146,7 +146,7 @@ class TestSeedWithoutPartnerCrawl:
             patch("helpers.user_map.get_workspace_by_id") as get_ws,
         ):
             find.side_effect = [[mapping], []]
-            newly, still = run_auto_match_for_workspace(MagicMock(), 2, allow_slack_email_lookup=False, seeded=0)
+            newly, still = run_auto_map_for_workspace(MagicMock(), 2, allow_slack_email_lookup=False, seeded=0)
 
         assert newly == 0
         assert still == 1
@@ -154,22 +154,22 @@ class TestSeedWithoutPartnerCrawl:
         get_ws.assert_not_called()
 
 
-class TestLastAutoMatchStatus:
+class TestLastAutoMapStatus:
     def test_format_twenty_new_found(self):
-        line = format_last_auto_match_line({"at": "2026-09-02T12:00:00Z", "newly_matched": 20, "still_unmatched": 3})
+        line = format_last_auto_map_line({"at": "2026-09-02T12:00:00Z", "newly_matched": 20, "still_unmatched": 3})
         assert line == "Last run on September 2, 2026 with 20 new found."
 
     def test_format_zero_new_found(self):
-        line = format_last_auto_match_line({"at": "2026-09-02T12:00:00Z", "newly_matched": 0, "still_unmatched": 5})
+        line = format_last_auto_map_line({"at": "2026-09-02T12:00:00Z", "newly_matched": 0, "still_unmatched": 5})
         assert line == "Last run on September 2, 2026 with 0 new found."
 
     def test_format_none_is_empty_hint(self):
-        line = format_last_auto_match_line(None)
+        line = format_last_auto_map_line(None)
         assert "No auto map yet" in line
 
 
 class TestUserMappingModal:
-    def test_open_posts_db_list_without_seed_or_match(self):
+    def test_open_posts_db_list_without_seed_or_map(self):
         workspace = SimpleNamespace(id=1, team_id="T1", bot_token="xoxb-1")
         body = {
             "trigger_id": "trig",
@@ -187,13 +187,13 @@ class TestUserMappingModal:
             ),
             patch("builders.user_mapping.orm.BlockView.post_modal") as post,
             patch("builders.user_mapping.seed_mappings_for_workspace") as seed,
-            patch("helpers.run_auto_match_for_workspace") as match,
+            patch("helpers.run_auto_map_for_workspace") as auto_map,
         ):
-            build_user_matching_entry(body, client, MagicMock(), {})
+            build_user_mapping_entry(body, client, MagicMock(), {})
 
         post.assert_called_once()
         seed.assert_not_called()
-        match.assert_not_called()
+        auto_map.assert_not_called()
         client.views_publish.assert_not_called()
 
     def test_edit_save_does_not_refresh_home(self):
@@ -238,22 +238,21 @@ class TestUserMappingModal:
         with (
             patch("handlers.users._get_authorized_workspace", return_value=("U1", workspace)),
             patch("handlers.users.seed_mappings_for_workspace") as seed,
-            patch("handlers.users.helpers.run_auto_match_for_workspace") as match,
+            patch("handlers.users.helpers.run_auto_map_for_workspace") as auto_map,
             patch("handlers.users.update_user_mapping_modal") as update_modal,
         ):
             handle_user_mapping_refresh(body, client, MagicMock(), {})
 
         seed.assert_not_called()
-        seed.assert_not_called()
-        match.assert_not_called()
+        auto_map.assert_not_called()
         update_modal.assert_called_once()
-        assert update_modal.call_args.kwargs.get("matching", False) is False
+        assert update_modal.call_args.kwargs.get("mapping_in_progress", False) is False
 
-    def test_auto_match_updates_modal_mapping_then_results(self):
+    def test_auto_map_updates_modal_mapping_then_results(self):
         workspace = SimpleNamespace(id=10, team_id="T1")
         body = {
             "view": {"id": "V1", "private_metadata": '{"group_id": 3, "page": 0}'},
-            "actions": [{"action_id": "user_mapping_auto_match", "value": "3"}],
+            "actions": [{"action_id": "user_mapping_auto_map", "value": "3"}],
         }
         client = MagicMock()
         with (
@@ -265,22 +264,22 @@ class TestUserMappingModal:
             patch(
                 "handlers.users.helpers.run_auto_map_for_workspace",
                 return_value=(20, 3),
-            ) as match,
+            ) as auto_map,
             patch("handlers.users.set_last_auto_map") as set_last,
             patch("handlers.users.helpers._cache_delete_prefix"),
             patch("handlers.users.update_user_mapping_modal") as update_modal,
             patch("handlers.users.builders.refresh_home_tab_for_workspace") as refresh_home,
         ):
-            handle_user_mapping_auto_match(body, client, MagicMock(), {})
+            handle_user_mapping_auto_map(body, client, MagicMock(), {})
 
         seed.assert_called_once()
-        match.assert_called_once()
-        assert match.call_args.kwargs.get("allow_slack_email_lookup") is False
+        auto_map.assert_called_once()
+        assert auto_map.call_args.kwargs.get("allow_slack_email_lookup") is False
         set_last.assert_called_once()
         assert set_last.call_args.kwargs["newly_matched"] == 20
         assert update_modal.call_count >= 2
-        assert update_modal.call_args_list[0].kwargs.get("matching") is True
-        assert update_modal.call_args_list[-1].kwargs.get("matching", False) is False
+        assert update_modal.call_args_list[0].kwargs.get("mapping_in_progress") is True
+        assert update_modal.call_args_list[-1].kwargs.get("mapping_in_progress", False) is False
         refresh_home.assert_not_called()
         cache_set.assert_called()
 
@@ -288,21 +287,21 @@ class TestUserMappingModal:
         workspace = SimpleNamespace(id=10, team_id="T1")
         body = {
             "view": {"id": "V1", "private_metadata": '{"group_id": 3, "page": 0}'},
-            "actions": [{"action_id": "user_mapping_auto_match", "value": "3"}],
+            "actions": [{"action_id": "user_mapping_auto_map", "value": "3"}],
         }
         with (
             patch("handlers.users._get_authorized_workspace", return_value=("U1", workspace)),
             patch("handlers.users.helpers._cache_get", return_value=True),
             patch("handlers.users.seed_mappings_for_workspace") as seed,
-            patch("handlers.users.helpers.run_auto_match_for_workspace") as match,
+            patch("handlers.users.helpers.run_auto_map_for_workspace") as auto_map,
             patch("handlers.users.update_user_mapping_modal") as update_modal,
         ):
-            handle_user_mapping_auto_match(body, MagicMock(), MagicMock(), {})
+            handle_user_mapping_auto_map(body, MagicMock(), MagicMock(), {})
 
         seed.assert_not_called()
-        match.assert_not_called()
+        auto_map.assert_not_called()
         update_modal.assert_called_once()
-        assert update_modal.call_args.kwargs.get("matching") is True
+        assert update_modal.call_args.kwargs.get("mapping_in_progress") is True
 
     def test_mapping_in_progress_is_short_placeholder(self):
         workspace = SimpleNamespace(id=1, team_id="T1")
@@ -312,7 +311,7 @@ class TestUserMappingModal:
             patch("builders.user_mapping._linked_workspace_ids") as linked,
             patch("builders.user_mapping._collect_mappings") as collect,
         ):
-            blocks, _meta = build_user_mapping_list_blocks(workspace, group_id=5, matching=True)
+            blocks, _meta = build_user_mapping_list_blocks(workspace, group_id=5, mapping_in_progress=True)
 
         linked.assert_not_called()
         collect.assert_not_called()
@@ -330,7 +329,7 @@ class TestUserMappingModal:
             patch("builders.user_mapping._linked_workspace_ids", return_value=set()),
             patch("builders.user_mapping._collect_mappings", return_value=[]),
         ):
-            blocks, _meta = build_user_mapping_list_blocks(workspace, group_id=5, matching=False)
+            blocks, _meta = build_user_mapping_list_blocks(workspace, group_id=5, mapping_in_progress=False)
 
         blob = str(BlockView(blocks=blocks).as_form_field())
         assert "Auto Map Now" in blob
@@ -339,8 +338,18 @@ class TestUserMappingModal:
         assert "Auto-match" not in blob
 
 
+class TestLeftoverActionIdsDropped:
+    def test_old_match_action_ids_not_routed(self):
+        from routing import ACTION_MAPPER
+
+        assert "manage_user_matching" not in ACTION_MAPPER
+        assert "user_mapping_auto_match" not in ACTION_MAPPER
+        assert "manage_user_mapping" in ACTION_MAPPER
+        assert "user_mapping_auto_map" in ACTION_MAPPER
+
+
 class TestJoinSeedsOnly:
-    def test_activate_membership_seeds_without_crawl_or_match(self):
+    def test_activate_membership_seeds_without_crawl_or_map(self):
         workspace = SimpleNamespace(id=1, team_id="T1", bot_token="enc", deleted_at=None)
         group = SimpleNamespace(id=9, name="G")
         partner = SimpleNamespace(id=2, team_id="T2", bot_token="enc", deleted_at=None)
@@ -350,12 +359,12 @@ class TestJoinSeedsOnly:
             patch("handlers.groups.DbManager.find_records", return_value=[member]),
             patch("handlers.groups.helpers.get_workspace_by_id", return_value=partner),
             patch("handlers.groups.helpers.seed_user_mappings") as seed,
-            patch("handlers.groups.helpers.run_auto_match_for_workspace") as match,
+            patch("handlers.groups.helpers.run_auto_map_for_workspace") as auto_map,
         ):
             _activate_group_membership(MagicMock(), workspace, group)
 
         assert seed.call_count == 2
-        match.assert_not_called()
+        auto_map.assert_not_called()
 
 
 class TestPublishAnnouncement:
@@ -510,7 +519,7 @@ class TestEnsureMappedTargetUserId:
         existing = SimpleNamespace(
             map_method="email",
             target_user_id="U_EXISTING",
-            matched_at=datetime.now(UTC),
+            mapped_at=datetime.now(UTC),
         )
         with (
             patch("helpers.user_map._mapping_row_for_pair", return_value=existing),

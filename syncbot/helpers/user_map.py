@@ -1,4 +1,4 @@
-"""Cross-workspace user matching and mention resolution."""
+"""Cross-workspace user mapping and mention resolution."""
 
 import json
 import logging
@@ -63,7 +63,7 @@ def normalize_display_name(name: str | None) -> str:
     return n if n else name
 
 
-def _match_ttl(method: str) -> int:
+def _map_ttl(method: str) -> int:
     """Return the TTL in seconds for a given mapping method."""
     if method == "manual":
         return 0
@@ -78,8 +78,8 @@ def _is_mapping_fresh(mapping: schemas.UserMapping) -> bool:
     """Return True if a cached mapping is still within its TTL."""
     if mapping.map_method == "manual":
         return True
-    ttl = _match_ttl(mapping.map_method)
-    age = (datetime.now(UTC) - mapping.matched_at.replace(tzinfo=UTC)).total_seconds()
+    ttl = _map_ttl(mapping.map_method)
+    age = (datetime.now(UTC) - mapping.mapped_at.replace(tzinfo=UTC)).total_seconds()
     return age < ttl
 
 
@@ -195,12 +195,12 @@ def _lookup_user_by_email(client: WebClient, email: str) -> str | None:
     return safe_get(res, "user", "id")
 
 
-def _match_from_directory(
+def _map_from_directory(
     source_profile: dict[str, Any],
     target_candidates: list[schemas.UserDirectory],
     target_by_email: dict[str, list[schemas.UserDirectory]],
 ) -> tuple[str | None, str]:
-    """Match using existing user_directory rows only (no Slack API)."""
+    """Map using existing user_directory rows only (no Slack API)."""
     email = (source_profile.get("email") or "").strip()
     if email:
         hits = target_by_email.get(email.lower()) or []
@@ -267,7 +267,7 @@ def _find_user_map(
             if key:
                 target_by_email.setdefault(key, []).append(entry)
 
-    target_uid, method = _match_from_directory(source_profile, target_candidates, target_by_email)
+    target_uid, method = _map_from_directory(source_profile, target_candidates, target_by_email)
     if target_uid:
         return target_uid, method
 
@@ -292,19 +292,19 @@ def _find_user_map(
                 err = str(exc)
             if err in ("missing_scope", "invalid_auth", "not_allowed"):
                 _logger.warning(
-                    "match_user_email_lookup_denied",
+                    "map_user_email_lookup_denied",
                     extra={"workspace_id": target_workspace_id, "error": err},
                 )
                 if email_lookup_denied is not None:
                     email_lookup_denied[0] = True
             elif err == "users_not_found":
                 _logger.debug(
-                    "match_user_email_lookup_users_not_found",
+                    "map_user_email_lookup_users_not_found",
                     extra={"workspace_id": target_workspace_id},
                 )
             else:
                 _logger.debug(
-                    "match_user_email_lookup_failed",
+                    "map_user_email_lookup_failed",
                     extra={"workspace_id": target_workspace_id, "error": err},
                 )
 
@@ -312,7 +312,7 @@ def _find_user_map(
 
 
 def _source_profile_from_directory(workspace_id: int, slack_user_id: str) -> dict[str, Any] | None:
-    """Build a match profile from user_directory when present."""
+    """Build a map profile from user_directory when present."""
     rows = DbManager.find_records(
         schemas.UserDirectory,
         [
@@ -415,7 +415,7 @@ def _persist_mapping_row(
                 schemas.UserMapping.target_user_id: target_user_id,
                 schemas.UserMapping.map_method: method,
                 schemas.UserMapping.source_display_name: display_name,
-                schemas.UserMapping.matched_at: now,
+                schemas.UserMapping.mapped_at: now,
             },
         )
     else:
@@ -427,7 +427,7 @@ def _persist_mapping_row(
                 target_user_id=target_user_id,
                 map_method=method,
                 source_display_name=display_name,
-                matched_at=now,
+                mapped_at=now,
                 group_id=None,
             )
         )
@@ -893,7 +893,7 @@ def seed_user_mappings(source_workspace_id: int, target_workspace_id: int, group
                 target_user_id=None,
                 map_method="none",
                 source_display_name=current_name,
-                matched_at=now,
+                mapped_at=now,
                 group_id=group_id,
             )
         )
@@ -910,7 +910,7 @@ def run_auto_map_for_workspace(
     allow_slack_email_lookup: bool = True,
     seeded: int | None = None,
 ) -> tuple[int, int]:
-    """Re-run auto-matching for unmatched mappings targeting a workspace.
+    """Re-run auto-map for unmatched mappings targeting a workspace.
 
     Uses existing ``user_directory`` rows. Does **not** start a ``users.list``
     crawl. Returns ``(newly_matched, still_unmatched)``.
@@ -978,7 +978,7 @@ def run_auto_map_for_workspace(
                     schemas.UserMapping.target_user_id: target_uid,
                     schemas.UserMapping.map_method: method,
                     schemas.UserMapping.source_display_name: display,
-                    schemas.UserMapping.matched_at: datetime.now(UTC),
+                    schemas.UserMapping.mapped_at: datetime.now(UTC),
                 },
             )
             newly_matched += 1
@@ -999,23 +999,16 @@ def run_auto_map_for_workspace(
     }
     if seeded is not None:
         extras["seeded"] = seeded
-    _logger.info("user_auto_match_complete", extra=extras)
+    _logger.info("user_auto_map_complete", extra=extras)
     return newly_matched, still_unmatched
 
 
 _LAST_AUTO_MAP_KEY = "last_auto_map"
-_LAST_AUTO_MATCH_KEY = "last_auto_match"  # leftover
 _AUTO_MAP_RUNNING_TTL = 45
-_AUTO_MATCH_RUNNING_TTL = _AUTO_MAP_RUNNING_TTL  # leftover alias
 
 
 def auto_map_running_key(workspace_id: int) -> str:
     return f"auto_map_running:{workspace_id}"
-
-
-def auto_match_running_key(workspace_id: int) -> str:
-    """Leftover alias for :func:`auto_map_running_key`."""
-    return auto_map_running_key(workspace_id)
 
 
 def get_last_auto_map(workspace_id: int) -> dict[str, Any] | None:
@@ -1023,8 +1016,6 @@ def get_last_auto_map(workspace_id: int) -> dict[str, Any] | None:
     from helpers.workspace_settings import get_raw_workspace_setting
 
     raw = get_raw_workspace_setting(workspace_id, _LAST_AUTO_MAP_KEY)
-    if not raw:
-        raw = get_raw_workspace_setting(workspace_id, _LAST_AUTO_MATCH_KEY)
     if not raw:
         return None
     try:
@@ -1034,11 +1025,6 @@ def get_last_auto_map(workspace_id: int) -> dict[str, Any] | None:
     if not isinstance(data, dict):
         return None
     return data
-
-
-def get_last_auto_match(workspace_id: int) -> dict[str, Any] | None:
-    """Leftover alias for :func:`get_last_auto_map`."""
-    return get_last_auto_map(workspace_id)
 
 
 def set_last_auto_map(
@@ -1090,17 +1076,6 @@ def set_last_auto_map(
     return payload
 
 
-def set_last_auto_match(
-    workspace_id: int,
-    *,
-    newly_matched: int,
-    still_unmatched: int,
-    at: datetime | None = None,
-) -> dict[str, Any]:
-    """Leftover alias for :func:`set_last_auto_map`."""
-    return set_last_auto_map(workspace_id, newly_matched=newly_matched, still_unmatched=still_unmatched, at=at)
-
-
 def format_last_auto_map_line(last: dict[str, Any] | None) -> str:
     """One-line status under Auto Map Now (UTC date)."""
     if not last:
@@ -1114,12 +1089,3 @@ def format_last_auto_map_line(last: dict[str, Any] | None) -> str:
     except Exception:
         pass
     return f"Last run on {date_label} with {newly} new found."
-
-
-def format_last_auto_match_line(last: dict[str, Any] | None) -> str:
-    """Leftover alias for :func:`format_last_auto_map_line`."""
-    return format_last_auto_map_line(last)
-
-
-_find_user_match = _find_user_map
-run_auto_match_for_workspace = run_auto_map_for_workspace

@@ -435,6 +435,36 @@ class TestAlembic012FederationEndpoint:
                 db_mod.GLOBAL_SCHEMA = old_schema
 
 
+class TestAlembic013MappedAt:
+    def test_renames_matched_at_when_rewound_to_012(self, tmp_path):
+        from alembic import command
+
+        import db as db_mod
+        from db import _alembic_config, get_engine, initialize_database
+
+        url = f"sqlite:///{tmp_path / 'alembic013.db'}"
+        old_engine = db_mod.GLOBAL_ENGINE
+        old_schema = db_mod.GLOBAL_SCHEMA
+        with patch.dict(os.environ, {"DATABASE_BACKEND": "sqlite", "DATABASE_URL": url}, clear=False):
+            try:
+                db_mod.GLOBAL_ENGINE = None
+                db_mod.GLOBAL_SCHEMA = None
+                initialize_database()
+                engine = get_engine()
+                with engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE user_mappings RENAME COLUMN mapped_at TO matched_at"))
+                    conn.execute(text("UPDATE alembic_version SET version_num = '012_federation_webhook_endpoint'"))
+                command.upgrade(_alembic_config(), "head")
+                names = {c["name"] for c in inspect(engine).get_columns("user_mappings")}
+                assert "mapped_at" in names
+                assert "matched_at" not in names
+            finally:
+                if db_mod.GLOBAL_ENGINE:
+                    db_mod.GLOBAL_ENGINE.dispose()
+                db_mod.GLOBAL_ENGINE = old_engine
+                db_mod.GLOBAL_SCHEMA = old_schema
+
+
 class TestAlembic009WidenTokens:
     def test_widens_varchar_token_column_when_rewound_to_008(self, tmp_path):
         from alembic import command

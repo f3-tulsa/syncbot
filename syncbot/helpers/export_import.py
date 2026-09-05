@@ -220,7 +220,7 @@ def restore_full_backup(
         "instance_keys": schemas.InstanceKey,
         "workspace_settings": schemas.WorkspaceSetting,
     }
-    datetime_keys = {"created_at", "updated_at", "deleted_at", "joined_at", "matched_at"}
+    datetime_keys = {"created_at", "updated_at", "deleted_at", "joined_at", "mapped_at", "matched_at"}
     for table_name in tables:
         rows = data.get(table_name, [])
         if table_name in _RAW_BACKUP_TABLES:
@@ -232,6 +232,11 @@ def restore_full_backup(
         # schema no longer has (e.g. workspace_groups.created_by_workspace_id).
         known_columns = {col.name for col in cls.__table__.columns}
         for row in rows:
+            # Remap old backup keys before known_columns skips unknown names.
+            if table_name == "user_mappings" and "mapped_at" not in row and "matched_at" in row:
+                row = {**row, "mapped_at": row["matched_at"]}
+            if table_name == "workspace_settings" and row.get("key") == "last_auto_match":
+                row = {**row, "key": "last_auto_map"}
             kwargs = {}
             for k, v in row.items():
                 if k not in known_columns:
@@ -419,7 +424,6 @@ def build_migration_export(workspace_id: int, include_source_instance: bool = Tr
                 "source_user_id": um.source_user_id,
                 "target_user_id": um.target_user_id,
                 "map_method": um.map_method,
-                "match_method": um.map_method,
             }
         )
 
@@ -637,7 +641,7 @@ def import_migration_data(
                 target_workspace_id=tgt_ws_id,
                 target_user_id=um.get("target_user_id"),
                 map_method=um.get("map_method") or um.get("match_method", "none"),
-                matched_at=datetime.now(UTC),
+                mapped_at=datetime.now(UTC),
                 group_id=group_id,
             )
         )

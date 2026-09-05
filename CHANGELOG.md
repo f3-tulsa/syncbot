@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- version list -->
 
 
+## [1.5.3] - 2026-09-05
+
+### Changed
+
+- User Mapping leftover match names are gone (`matched_at` is `mapped_at`; old backup keys still import)
+- `TOKEN_ENCRYPTION_KEY` still loads when `DATA_ENCRYPTION_KEY` is unset and logs a deprecation warning
+
 ## [1.5.2] - 2026-09-03
 
 ### Changed

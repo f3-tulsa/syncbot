@@ -118,7 +118,7 @@ def build_user_mapping_list_blocks(
     group_id: int | None = None,
     page: int = 0,
     context: dict | None = None,
-    matching: bool = False,
+    mapping_in_progress: bool = False,
 ) -> tuple[list[orm.BaseBlock], dict[str, Any]]:
     """Build list-modal blocks and private_metadata for the current page."""
     group_name = _group_display_name(group_id)
@@ -126,7 +126,7 @@ def build_user_mapping_list_blocks(
     meta = {"group_id": group_id or 0, "page": max(0, page)}
     last_line = format_last_auto_map_line(get_last_auto_map(workspace_record.id))
 
-    if matching:
+    if mapping_in_progress:
         blocks: list[orm.BaseBlock] = [
             header(f"User Mapping: {group_name}"),
             block_context(_INTRO),
@@ -201,7 +201,7 @@ def update_user_mapping_modal(
     group_id: int | None = None,
     page: int = 0,
     context: dict | None = None,
-    matching: bool = False,
+    mapping_in_progress: bool = False,
 ) -> None:
     """Replace the User Mapping modal contents with the current list page."""
     blocks, meta = build_user_mapping_list_blocks(
@@ -209,7 +209,7 @@ def update_user_mapping_modal(
         group_id=group_id,
         page=page,
         context=context,
-        matching=matching,
+        mapping_in_progress=mapping_in_progress,
     )
     try:
         orm.BlockView(blocks=blocks).update_modal(
@@ -228,13 +228,13 @@ def update_user_mapping_modal(
         )
 
 
-def build_user_matching_entry(
+def build_user_mapping_entry(
     body: dict,
     client: WebClient,
     logger,
     context: dict,
 ) -> None:
-    """Open the User Mapping modal from the DB only (no seed/match/crawl)."""
+    """Open the User Mapping modal from the DB only (no seed/map/crawl)."""
     if _deny_unauthorized(body, client, logger):
         return
 

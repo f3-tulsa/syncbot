@@ -22,7 +22,7 @@ from builders.home import (
 )
 from builders.user_mapping import (
     build_user_mapping_edit_modal,
-    build_user_matching_entry,
+    build_user_mapping_entry,
     seed_mappings_for_workspace,
     update_user_mapping_modal,
 )
@@ -38,7 +38,7 @@ __all__ = [
     "_home_tab_content_hash",
     "build_home_tab",
     "build_user_mapping_edit_modal",
-    "build_user_matching_entry",
+    "build_user_mapping_entry",
     "refresh_home_tab_for_workspace",
     "seed_mappings_for_workspace",
     "update_user_mapping_modal",

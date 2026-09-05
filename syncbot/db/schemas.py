@@ -11,10 +11,10 @@ Tables:
 * **post_meta** — Maps each synced message to its channel-specific
   timestamp so edits, deletes, and thread replies can be propagated.
 * **user_directory** — Cached copy of each workspace's user profiles,
-  used for cross-workspace name-based matching.
-* **user_mappings** — Cross-workspace user match results (including
-  confirmed matches, name-based matches, manual admin matches, and
-  explicit "no match" records to avoid redundant lookups).
+  used for cross-workspace name-based mapping.
+* **user_mappings** — Cross-workspace user map results (including
+  confirmed maps, name-based maps, manual admin maps, and
+  explicit "no map" records to avoid redundant lookups).
 * **processed_events** — Slack Events API ``event_id`` claims (at-least-once
   dedup). Ephemeral; not included in full-instance backup.
 * **user_action_echoes** — Remembered user-token Slack writes so inbound echo
@@ -171,7 +171,7 @@ class PostMeta(BaseClass, GetDBClass):
 
 
 class UserDirectory(BaseClass, GetDBClass):
-    """Cached user profile from a Slack workspace, used for name matching."""
+    """Cached user profile from a Slack workspace, used for name mapping."""
 
     __tablename__ = "user_directory"
     id = Column(Integer, primary_key=True)
@@ -199,7 +199,7 @@ class UserMapping(BaseClass, GetDBClass):
     target_user_id = Column(String(100), nullable=True)
     map_method = Column(String(20), nullable=False, default="none")
     source_display_name = Column(String(200), nullable=True)
-    matched_at = Column(DateTime, nullable=False)
+    mapped_at = Column(DateTime, nullable=False)
     group_id = Column(Integer, ForeignKey("workspace_groups.id"), nullable=True)
 
     def get_id():

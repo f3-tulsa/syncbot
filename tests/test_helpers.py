@@ -110,6 +110,48 @@ class TestEncryption:
         ):
             helpers.decrypt_bot_token(encrypted)
 
+    def test_token_encryption_key_legacy_encrypts_and_warns_once(self, caplog):
+        import logging
+
+        import constants
+
+        constants._TOKEN_ENCRYPTION_KEY_WARNED = False
+        token = "xoxb-0-0"
+        with (
+            patch.dict(os.environ, {"TOKEN_ENCRYPTION_KEY": "legacy-secret-key16"}, clear=False),
+            caplog.at_level(logging.WARNING, logger="constants"),
+        ):
+            os.environ.pop("DATA_ENCRYPTION_KEY", None)
+            encrypted = helpers.encrypt_bot_token(token)
+            assert encrypted != token
+            assert helpers.decrypt_bot_token(encrypted) == token
+            helpers.encrypt_bot_token(token)
+        warns = [r for r in caplog.records if "TOKEN_ENCRYPTION_KEY" in r.getMessage()]
+        assert len(warns) == 1
+        assert "DATA_ENCRYPTION_KEY" in warns[0].getMessage()
+
+    def test_token_encryption_key_warns_when_unused_beside_data_key(self, caplog):
+        import logging
+
+        import constants
+
+        constants._TOKEN_ENCRYPTION_KEY_WARNED = False
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "DATA_ENCRYPTION_KEY": "my-secret-key-16chars",
+                    "TOKEN_ENCRYPTION_KEY": "legacy-unused-key16",
+                },
+                clear=False,
+            ),
+            caplog.at_level(logging.WARNING, logger="constants"),
+        ):
+            assert helpers.encrypt_bot_token("xoxb-0-0") != "xoxb-0-0"
+            helpers.encrypt_bot_token("xoxb-0-0")
+        warns = [r for r in caplog.records if "TOKEN_ENCRYPTION_KEY" in r.getMessage()]
+        assert len(warns) == 1
+
 
 # -----------------------------------------------------------------------
 # In-process cache
