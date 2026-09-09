@@ -194,7 +194,10 @@ class TestHandleMessageEditForwardsLayoutBlocks:
             patch("handlers.message.helpers.run_sync_pipeline", return_value=[]) as pipeline,
         ):
             _handle_message_edit(MagicMock(), MagicMock(), ctx, [])
-        blocks = pipeline.call_args.args[0]["blocks"]
+        envelope = pipeline.call_args.args[0]
+        blocks = envelope["blocks"]
+        assert envelope["source_sync_channel_id"] == 1
+        assert envelope["people"][0]["user_id"] == "U_SRC"
         assert blocks[0]["type"] == "section"
         assert "🌭" in blocks[1]["text"]["text"]
 

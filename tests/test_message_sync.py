@@ -67,3 +67,24 @@ class TestGetPostRecordsDeduplication:
         assert len(result) == 1
         assert result[0][0].id == 10
         assert result[0][0].ts == 111.111
+
+
+class TestFindPublishingPostRecords:
+    def test_skips_subscribe_only_and_other_channels(self):
+        from helpers.post_meta import find_publishing_post_records
+
+        origin = SimpleNamespace(id=1, post_id="p1")
+        copy = SimpleNamespace(id=2, post_id="p1")
+        hub_pub = SimpleNamespace(id=11, channel_id="C_HUB", publishes=True)
+        hub_sub = SimpleNamespace(id=12, channel_id="C_HUB", publishes=False)
+        ao = SimpleNamespace(id=13, channel_id="C_AO", publishes=True)
+        ws = SimpleNamespace(id=1)
+        rows = [
+            (origin, hub_pub, ws),
+            (copy, hub_sub, ws),
+            (copy, ao, ws),
+        ]
+
+        result = find_publishing_post_records(rows, "C_HUB")
+
+        assert result == [(origin, hub_pub, ws)]

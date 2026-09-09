@@ -192,6 +192,10 @@ class TestFileOnlyThreadPostMeta:
             _handle_thread_reply(body, client, logger, ctx, [], direct_files)
 
         post_msg.assert_not_called()
+        envelope = pipeline.call_args.args[0]
+        assert envelope["thread_post_id"] == "parent"
+        assert envelope["source_sync_channel_id"] == 11
+        assert envelope["people"][0]["user_id"] == "U1"
         assert pipeline.call_args.kwargs["thread_parent_ts_by_channel"]["C_TGT"] == "20.000000"
         assert pipeline.call_args.args[0]["file_refs"] == direct_files
         assert len(created) == 2

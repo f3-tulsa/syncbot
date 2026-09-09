@@ -13,6 +13,24 @@ ACTION_DELETE = "delete"
 ACTION_ADD = "add"
 ACTION_REMOVE = "remove"
 
+_FOLLOW_UP_ACTIONS = frozenset({ACTION_EDIT, ACTION_DELETE, ACTION_ADD, ACTION_REMOVE})
+
+
+def post_id_for_post_records(envelope: dict[str, Any]) -> str | None:
+    """PostMeta ``post_id`` used to look up ``get_post_records`` for this envelope.
+
+    Thread replies and files in a thread use ``thread_post_id``. Edits,
+    deletes, and reactions use ``post_id`` of that message. A new top-level
+    create has neither and fans out to every publish target.
+    """
+    thread = envelope.get("thread_post_id")
+    if thread:
+        return str(thread)
+    if envelope.get("action") in _FOLLOW_UP_ACTIONS:
+        pid = envelope.get("post_id")
+        return str(pid) if pid else None
+    return None
+
 
 def build_envelope(
     *,
@@ -22,6 +40,7 @@ def build_envelope(
     source_channel_id: str,
     source_workspace_id: int | None,
     source_team_id: str | None = None,
+    source_sync_channel_id: int | None = None,
     people: list[dict[str, Any]] | None = None,
     text: str | None = None,
     blocks: list[dict] | None = None,
@@ -51,6 +70,8 @@ def build_envelope(
         envelope["source_workspace_id"] = source_workspace_id
     if source_team_id:
         envelope["source_team_id"] = source_team_id
+    if source_sync_channel_id is not None:
+        envelope["source_sync_channel_id"] = source_sync_channel_id
     if people:
         envelope["people"] = people
     if source_user_id:

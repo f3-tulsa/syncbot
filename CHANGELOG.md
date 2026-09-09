@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New publishes are visible to the whole group; a Channel may be published in more than one group
 - Reaction send and receive follow publish and subscribe; Reaction type is Hybrid, Direct, or Off
 
+### Fixed
+
+- Thread replies, files, and reactions stay on the original message's sync
+
 ## [1.5.4] - 2026-09-09
 
 ### Fixed

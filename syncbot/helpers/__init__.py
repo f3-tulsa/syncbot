@@ -57,6 +57,7 @@ from helpers.envelope import (
     KIND_REACTION,
     build_envelope,
     people_entry,
+    post_id_for_post_records,
 )
 from helpers.files import (
     cleanup_temp_files,
@@ -104,7 +105,9 @@ from helpers.oauth import (
     remember_public_base,
 )
 from helpers.post_meta import (
+    find_publishing_post_records,
     get_post_records,
+    get_post_records_for_post_id,
     origin_post_meta_rows,
     post_meta_exists_for_channel_ts,
 )
@@ -238,6 +241,7 @@ __all__ = [
     "KIND_REACTION",
     "build_envelope",
     "people_entry",
+    "post_id_for_post_records",
     "ensure_mapped_target_user_id",
     "blocks_include_body",
     "choose_message_text",
@@ -270,7 +274,9 @@ __all__ = [
     "normalize_display_name",
     "get_own_bot_id",
     "get_own_bot_user_id",
+    "find_publishing_post_records",
     "get_post_records",
+    "get_post_records_for_post_id",
     "origin_post_meta_rows",
     "get_request_type",
     "get_user_id_from_body",

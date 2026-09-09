@@ -175,7 +175,7 @@ def test_pipeline_does_not_hop_from_target_into_its_other_sync(real_db, kind, ac
     a, b, c = _workspace("T_A"), _workspace("T_B"), _workspace("T_C")
     first, second = _sync(a, "A to B"), _sync(b, "B to C")
     source = _channel(first, a, "C_A", publishes=True, subscribes=False)
-    _channel(first, b, "C_B", publishes=False, subscribes=True)
+    b_first = _channel(first, b, "C_B", publishes=False, subscribes=True)
     _channel(second, b, "C_B", publishes=True, subscribes=False)
     _channel(second, c, "C_C", publishes=False, subscribes=True)
     envelope = {
@@ -185,10 +185,12 @@ def test_pipeline_does_not_hop_from_target_into_its_other_sync(real_db, kind, ac
         "source_workspace_id": a.id,
         **extra,
     }
+    if action != "create":
+        DbManager.create_record(schemas.PostMeta(post_id="P1", sync_channel_id=source.id, ts=1.0))
+        DbManager.create_record(schemas.PostMeta(post_id="P1", sync_channel_id=b_first.id, ts=2.0))
 
     with (
         patch("helpers.sync_pipeline.get_federated_workspace_for_sync", return_value=None),
-        patch("helpers.sync_pipeline.get_post_records", return_value=[]),
         patch("helpers.sync_pipeline.apply_target", return_value=[]) as apply,
     ):
         run_sync_pipeline(
@@ -199,6 +201,44 @@ def test_pipeline_does_not_hop_from_target_into_its_other_sync(real_db, kind, ac
         )
 
     assert [call.args[1].channel_id for call in apply.call_args_list] == ["C_B"]
+
+
+def test_thread_reply_stays_on_original_post_records_not_sibling_sync(real_db):
+    """A reply on a copy in a Channel that also publishes elsewhere must not unthread."""
+    hub, ao, blackops = _workspace("T_HUB"), _workspace("T_AO"), _workspace("T_BLACK")
+    sync_a, sync_b = _sync(hub, "hub to ao"), _sync(blackops, "blackops to hub")
+    hub_a = _channel(sync_a, hub, "C_HUB", publishes=True, subscribes=True)
+    _channel(sync_a, ao, "C_AO", publishes=True, subscribes=True)
+    hub_b = _channel(sync_b, hub, "C_HUB", publishes=True, subscribes=True)
+    black = _channel(sync_b, blackops, "C_BLACK", publishes=True, subscribes=True)
+    DbManager.create_record(schemas.PostMeta(post_id="PARENT", sync_channel_id=black.id, ts=10.0))
+    DbManager.create_record(schemas.PostMeta(post_id="PARENT", sync_channel_id=hub_b.id, ts=20.0))
+
+    envelope = {
+        "kind": "message",
+        "action": "create",
+        "post_id": "REPLY",
+        "source_workspace_id": hub.id,
+        "source_sync_channel_id": hub_b.id,
+        "thread_post_id": "PARENT",
+        "text": "reply in the copy thread",
+    }
+
+    with (
+        patch("helpers.sync_pipeline.get_federated_workspace_for_sync", return_value=None),
+        patch("helpers.sync_pipeline.apply_target", return_value=[]) as apply,
+    ):
+        run_sync_pipeline(
+            envelope,
+            source_channel_id="C_HUB",
+            source_sync_channel=hub_b,
+            origin_ts="30.000000",
+        )
+
+    assert [call.args[1].channel_id for call in apply.call_args_list] == ["C_BLACK"]
+    assert apply.call_args.kwargs["thread_ts"] == "10.000000"
+    assert "C_AO" not in [call.args[1].channel_id for call in apply.call_args_list]
+    assert hub_a.id != hub_b.id
 
 
 def test_synced_copy_is_detected_and_does_not_need_to_originate(real_db):

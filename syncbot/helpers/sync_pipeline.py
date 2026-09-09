@@ -8,8 +8,8 @@ from typing import Any
 from slack_sdk import WebClient
 
 from db import schemas
-from helpers.envelope import ACTION_ADD, ACTION_DELETE, ACTION_EDIT, ACTION_REMOVE
-from helpers.post_meta import get_post_records
+from helpers.envelope import post_id_for_post_records
+from helpers.post_meta import get_post_records_for_post_id
 from helpers.sync_apply import apply_target
 from helpers.sync_participation import iter_publish_targets
 from helpers.user_action_echo import slack_message_ts
@@ -27,30 +27,42 @@ def run_sync_pipeline(
     origin_ts: str | None = None,
     thread_parent_ts_by_channel: dict[str, str] | None = None,
 ) -> list[schemas.PostMeta]:
-    """Discover subscribers, dedupe, apply. Returns PostMeta rows to persist (targets only)."""
+    """Discover subscribers, dedupe, apply. Returns PostMeta rows to persist (targets only).
+
+    Follow-up envelopes (thread replies, files in a thread, edits, deletes,
+    reactions) carry ``thread_post_id`` or the parent ``post_id``. Fan-out is
+    only the PostMeta records for that id, never every other Sync on the Channel.
+    """
+    del origin_ts  # Callers still pass origin_ts; PostMeta identity is on the envelope.
     targets = iter_publish_targets(source_channel_id)
+    records_post_id = post_id_for_post_records(envelope)
+    post_records = get_post_records_for_post_id(records_post_id) if records_post_id else []
+    post_records_by_channel = {sync_channel.channel_id: pm for pm, sync_channel, _ws in post_records}
+    parent_ts_by_channel = thread_parent_ts_by_channel or {
+        sync_channel.channel_id: slack_message_ts(pm.ts) for pm, sync_channel, _ws in post_records
+    }
+    if records_post_id is not None:
+        allowed = set(post_records_by_channel)
+        targets = [
+            (sync_channel, workspace) for sync_channel, workspace in targets if sync_channel.channel_id in allowed
+        ]
+
     if not targets:
         return []
 
     post_list: list[schemas.PostMeta] = []
     name_probe_cache: dict = {}
     source_workspace_id = envelope.get("source_workspace_id")
-
-    post_records_by_channel: dict[str, schemas.PostMeta] = {}
-    if envelope.get("action") in (ACTION_EDIT, ACTION_DELETE, ACTION_ADD, ACTION_REMOVE):
-        lookup_ts = origin_ts or envelope.get("source_ts")
-        if lookup_ts:
-            for pm, sc, _ws in get_post_records(lookup_ts):
-                post_records_by_channel[sc.channel_id] = pm
+    is_thread_create = bool(envelope.get("thread_post_id"))
 
     for sync_channel, workspace in targets:
         try:
             fed_ws = get_federated_workspace_for_sync(sync_channel.sync_id)
             is_remote = bool(fed_ws and source_workspace_id and workspace.id != source_workspace_id)
             target_meta = post_records_by_channel.get(sync_channel.channel_id)
-            thread_ts = None
-            if thread_parent_ts_by_channel:
-                thread_ts = thread_parent_ts_by_channel.get(sync_channel.channel_id)
+            thread_ts = parent_ts_by_channel.get(sync_channel.channel_id) if is_thread_create else None
+            if is_thread_create and not thread_ts:
+                continue
 
             if is_remote and fed_ws:
                 from federation.deliver import deliver_remote

@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from helpers.envelope import build_envelope
+from helpers.envelope import build_envelope, post_id_for_post_records
 from helpers.slack_write import (
     pick_write_token,
     slack_write_create,
@@ -260,6 +260,42 @@ def test_build_envelope_kinds_and_actions(kind, action, extra, expected):
         assert "text" not in envelope
 
 
+def test_build_envelope_carries_post_id_and_people():
+    envelope = build_envelope(
+        kind="message",
+        action="create",
+        post_id="P2",
+        source_channel_id="C_SOURCE",
+        source_workspace_id=1,
+        source_team_id="T_SOURCE",
+        source_sync_channel_id=11,
+        people=[{"user_id": "U1", "name": "Ada"}],
+        text="reply",
+        thread_post_id="PARENT",
+    )
+
+    assert envelope["source_sync_channel_id"] == 11
+    assert envelope["source_team_id"] == "T_SOURCE"
+    assert envelope["people"] == [{"user_id": "U1", "name": "Ada"}]
+    assert envelope["thread_post_id"] == "PARENT"
+    assert post_id_for_post_records(envelope) == "PARENT"
+    assert post_id_for_post_records(_envelope()) is None
+    assert post_id_for_post_records(_envelope(action="edit")) == "P1"
+    assert post_id_for_post_records(_envelope(kind="reaction", action="add", reaction="eyes")) == "P1"
+
+
+def test_apply_target_does_not_unthread_a_reply():
+    with patch("helpers.sync_apply.slack_write_create") as write:
+        created = apply_target(
+            _envelope(thread_post_id="PARENT"),
+            _sync_channel(),
+            _workspace(),
+        )
+
+    assert created == []
+    write.assert_not_called()
+
+
 def test_apply_target_records_sticky_posted_as_user():
     with patch(
         "helpers.sync_apply.slack_write_create",
@@ -284,6 +320,7 @@ def test_run_sync_pipeline_applies_once_per_unique_target():
     with (
         patch("helpers.sync_pipeline.iter_publish_targets", return_value=targets),
         patch("helpers.sync_pipeline.get_federated_workspace_for_sync", return_value=None),
+        patch("helpers.sync_pipeline.get_post_records_for_post_id", return_value=[]),
         patch("helpers.sync_pipeline.apply_target", side_effect=[["one"], ["two"]]) as apply,
     ):
         result = run_sync_pipeline(

@@ -17,6 +17,28 @@ from slack import orm
 _logger = logging.getLogger(__name__)
 
 
+def _build_envelope_people(
+    ctx: EventContext,
+    user_id: str | None,
+    user_name: str | None,
+    user_profile_url: str | None,
+) -> list[dict]:
+    """Author plus mentioned users for the source-canonical envelope."""
+    people = [
+        helpers.people_entry(
+            person["user_id"],
+            name=person.get("user_name"),
+            email=person.get("email"),
+            avatar_url=person.get("user_profile_url"),
+        )
+        for person in (ctx.get("mentioned_users") or [])
+        if person.get("user_id")
+    ]
+    if user_id:
+        people.insert(0, helpers.people_entry(user_id, name=user_name, avatar_url=user_profile_url))
+    return people
+
+
 def _event_is_bot_post(event: dict) -> bool:
     """True for ``bot_message`` and for ``message_changed`` of a bot post."""
     if event.get("subtype") == "bot_message" or event.get("bot_id"):
@@ -160,18 +182,6 @@ def _handle_new_post(
     )
     post_uuid = uuid.uuid4().hex
     source_ts = helpers.safe_get(body, "event", "ts")
-    people = [
-        helpers.people_entry(
-            person["user_id"],
-            name=person.get("user_name"),
-            email=person.get("email"),
-            avatar_url=person.get("user_profile_url"),
-        )
-        for person in (ctx.get("mentioned_users") or [])
-        if person.get("user_id")
-    ]
-    if user_id:
-        people.insert(0, helpers.people_entry(user_id, name=user_name, avatar_url=user_profile_url))
     envelope = helpers.build_envelope(
         kind=helpers.KIND_MESSAGE,
         action=helpers.ACTION_CREATE,
@@ -179,7 +189,8 @@ def _handle_new_post(
         source_channel_id=channel_id,
         source_workspace_id=source_workspace.id,
         source_team_id=ctx.get("team_id"),
-        people=people,
+        source_sync_channel_id=source_sync_channel.id,
+        people=_build_envelope_people(ctx, user_id, user_name, user_profile_url),
         text=ctx.get("msg_text") or "",
         blocks=ctx.get("content_blocks") or [],
         file_refs=direct_files or [],
@@ -235,13 +246,12 @@ def _handle_thread_reply(
     if not post_records:
         helpers.cleanup_temp_files(None, direct_files)
         return
-    source_record = next((record for record in post_records if record[1].channel_id == channel_id), None)
-    source_sync_channel = helpers.find_origin_sync_channel(channel_id)
-    if not source_record or not source_sync_channel:
+    source_rows = helpers.find_publishing_post_records(post_records, channel_id)
+    if not source_rows:
         helpers.cleanup_temp_files(None, direct_files)
         return
-    parent_meta, _parent_channel, source_workspace = source_record
-    source_records = helpers.find_channel_memberships(channel_id)
+    parent_meta, source_sync_channel, source_workspace = source_rows[0]
+    source_records = [(sync_channel, workspace) for _meta, sync_channel, workspace in source_rows]
     user_name, user_profile_url = (
         helpers.get_user_info(client, user_id) if user_id else helpers.get_bot_info_from_event(body)
     )
@@ -254,6 +264,8 @@ def _handle_thread_reply(
         source_channel_id=channel_id,
         source_workspace_id=source_workspace.id,
         source_team_id=ctx.get("team_id"),
+        source_sync_channel_id=source_sync_channel.id,
+        people=_build_envelope_people(ctx, user_id, user_name, user_profile_url),
         text=ctx.get("msg_text") or "",
         blocks=ctx.get("content_blocks") or [],
         file_refs=direct_files or [],
@@ -311,21 +323,24 @@ def _handle_message_edit(
     post_records = helpers.get_post_records(ts)
     if not post_records:
         return
-    source_record = next((record for record in post_records if record[1].channel_id == channel_id), None)
-    source_sync_channel = helpers.find_origin_sync_channel(channel_id)
-    if not source_record or not source_sync_channel:
+    source_rows = helpers.find_publishing_post_records(post_records, channel_id)
+    if not source_rows:
         return
-    post_meta, _sync_channel, workspace = source_record
+    post_meta, source_sync_channel, workspace = source_rows[0]
+    user_id = ctx.get("user_id")
     envelope = helpers.build_envelope(
         kind=helpers.KIND_MESSAGE,
         action=helpers.ACTION_EDIT,
         post_id=str(post_meta.post_id),
         source_channel_id=channel_id,
         source_workspace_id=workspace.id,
+        source_team_id=ctx.get("team_id"),
+        source_sync_channel_id=source_sync_channel.id,
+        people=_build_envelope_people(ctx, user_id, None, None),
         text=ctx.get("msg_text") or "",
         blocks=ctx.get("content_blocks") or [],
         images=photo_blocks,
-        source_user_id=ctx.get("user_id"),
+        source_user_id=user_id,
         workspace_name=helpers.resolve_workspace_name(workspace),
         source_ts=ts,
     )
@@ -348,17 +363,18 @@ def _handle_message_delete(
     post_records = helpers.get_post_records(ts)
     if not post_records:
         return
-    source_record = next((record for record in post_records if record[1].channel_id == channel_id), None)
-    source_sync_channel = helpers.find_origin_sync_channel(channel_id)
-    if not source_record or not source_sync_channel:
+    source_rows = helpers.find_publishing_post_records(post_records, channel_id)
+    if not source_rows:
         return
-    post_meta, _sync_channel, workspace = source_record
+    post_meta, source_sync_channel, workspace = source_rows[0]
     envelope = helpers.build_envelope(
         kind=helpers.KIND_MESSAGE,
         action=helpers.ACTION_DELETE,
         post_id=str(post_meta.post_id),
         source_channel_id=channel_id,
         source_workspace_id=workspace.id,
+        source_team_id=ctx.get("team_id"),
+        source_sync_channel_id=source_sync_channel.id,
         source_user_id=ctx.get("user_id"),
         workspace_name=helpers.resolve_workspace_name(workspace),
         source_ts=ts,

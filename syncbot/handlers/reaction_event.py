@@ -20,12 +20,12 @@ def _sync_reaction_records(body: dict, client: WebClient, reacted_records: list[
     channel_id = item.get("channel")
     event_type = event.get("type")
     action = helpers.ACTION_ADD if event_type == "reaction_added" else helpers.ACTION_REMOVE
-    source_record = next((record for record in reacted_records if record[1].channel_id == channel_id), None)
-    source_sync_channel = helpers.find_origin_sync_channel(channel_id)
-    if not source_record or not source_sync_channel:
+    source_rows = helpers.find_publishing_post_records(reacted_records, channel_id)
+    if not source_rows:
         return
-    post_meta, _sync_channel, source_workspace = source_record
+    post_meta, source_sync_channel, source_workspace = source_rows[0]
     user_name, user_profile_url = helpers.get_user_info(client, user_id) if user_id else (None, None)
+    people = [helpers.people_entry(user_id, name=user_name, avatar_url=user_profile_url)] if user_id else None
     envelope = helpers.build_envelope(
         kind=helpers.KIND_REACTION,
         action=action,
@@ -33,6 +33,8 @@ def _sync_reaction_records(body: dict, client: WebClient, reacted_records: list[
         source_channel_id=channel_id,
         source_workspace_id=source_workspace.id,
         source_team_id=helpers.safe_get(body, "team_id"),
+        source_sync_channel_id=source_sync_channel.id,
+        people=people,
         reaction=reaction,
         source_user_id=user_id,
         user_name=user_name,

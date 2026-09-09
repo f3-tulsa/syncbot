@@ -120,6 +120,10 @@ class TestSkipOrigin:
 
         assert pipeline.call_args.kwargs["source_channel_id"] == "C_SRC"
         assert pipeline.call_args.kwargs["source_sync_channel"] is source
+        envelope = pipeline.call_args.args[0]
+        assert envelope["post_id"] == "p1"
+        assert envelope["source_sync_channel_id"] == source.id
+        assert envelope["people"][0]["user_id"] == "U_SRC"
 
 
 class TestApplyOff:

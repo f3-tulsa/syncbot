@@ -42,6 +42,8 @@ def apply_target(
     created: list[schemas.PostMeta] = []
 
     if kind == KIND_MESSAGE and action == ACTION_CREATE:
+        if envelope.get("thread_post_id") and not thread_ts:
+            return []
         ts, split_ts, posted_as = slack_write_create(
             envelope=envelope,
             sync_channel=sync_channel,
