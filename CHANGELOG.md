@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Authorize SyncBot no longer asks to send DMs as you
 - New publishes are visible to the whole group; a Channel may be published in more than one group
 - Reaction send and receive follow publish and subscribe; Reaction type is Hybrid, Direct, or Off
+- Home Synced Channels lists each partner as a code-ticked `#channel (Workspace)`
+- Home Synced Channels Status includes participation, for example Active (Publish and Subscribe)
+- Home action buttons and in-channel sync notices lead with an emoji
 
 ### Fixed
 

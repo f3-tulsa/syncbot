@@ -29,6 +29,17 @@ def participation_flags(value: str | None) -> tuple[bool, bool]:
     return True, True
 
 
+def participation_label(sync_channel: schemas.SyncChannel | None) -> str:
+    """Radio wording for this membership: Publish only, Subscribe only, or Publish and Subscribe."""
+    publishes = channel_publishes(sync_channel)
+    subscribes = channel_subscribes(sync_channel)
+    if publishes and not subscribes:
+        return "Publish only"
+    if subscribes and not publishes:
+        return "Subscribe only"
+    return "Publish and Subscribe"
+
+
 def channel_publishes(sync_channel: schemas.SyncChannel | None) -> bool:
     """True when this membership originates messages and reactions."""
     if sync_channel is None:

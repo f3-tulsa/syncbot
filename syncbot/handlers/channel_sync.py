@@ -176,13 +176,10 @@ def _admin_workspace_label(client: WebClient, user_id: str, workspace) -> str:
 def _create_sync_notice(admin_name: str, publishes: bool, subscribes: bool) -> str:
     first = f"*{admin_name}* created a Sync for this Channel."
     if publishes and subscribes:
-        second = "This Channel will send and receive messages with Workspaces that join."
+        second = "This Channel will send and receive messages between Workspaces that join."
     else:
-        second = (
-            "Messages from this Channel will be sent one way to Workspaces that join. "
-            "This Channel will not receive their messages."
-        )
-    return f"{first} {second}"
+        second = "Messages from this Channel will be sent to Workspaces that join."
+    return f":arrows_counterclockwise: {first} {second}"
 
 
 def _flow_sentence(
@@ -195,12 +192,12 @@ def _flow_sentence(
     to_them = here_publishes and there_subscribes
     to_here = there_publishes and here_subscribes
     if to_them and to_here:
-        return "Messages will flow both ways between this Channel and that Channel."
+        return "Messages will flow both ways between these Channels."
     if to_them:
-        return "Messages from this Channel will appear there. This Channel will not receive messages from that Channel."
+        return "Messages from here will be sent to the Channel in the other Workspace."
     if to_here:
-        return "Messages from that Channel will appear here. That Channel will not receive messages from this Channel."
-    return "This Channel is not exchanging messages with that Channel."
+        return "Messages from that Channel will appear here."
+    return "Messages will not be exchanged between these Channels."
 
 
 def _join_notice(
@@ -223,7 +220,7 @@ def _join_notice(
         there_publishes=there_publishes,
         there_subscribes=there_subscribes,
     )
-    return f"{first} {second}"
+    return f":arrows_counterclockwise: {first} {second}"
 
 
 def _is_last_publisher(channels: list, workspace_id: int) -> bool:
@@ -288,7 +285,10 @@ def _participation_help(*, mode: str) -> str:
 
 
 def _reaction_style_help(*, first_time: bool) -> str:
-    base = "Reaction type applies while this Channel subscribes. Off skips incoming reactions here."
+    base = (
+        "Reaction type applies while this Channel subscribes. "
+        "Off does not apply incoming reactions here, including later unreacts."
+    )
     if not first_time:
         return base
     return (
@@ -744,7 +744,7 @@ def handle_leave_sync(
             orm.ActionsBlock(
                 elements=[
                     orm.ButtonElement(
-                        label="Leave Sync",
+                        label=":octagonal_sign: Leave Sync",
                         action=actions.CONFIG_LEAVE_SYNC_CONFIRM,
                         value=str(sync_id),
                         style="danger",
@@ -1035,7 +1035,7 @@ def handle_pause_sync(body: dict, client: WebClient, logger: Logger, context: di
         prefixes=(actions.CONFIG_PAUSE_SYNC,),
         confirm_action=actions.CONFIG_PAUSE_SYNC_CONFIRM,
         title="Pause Sync",
-        button_label="Pause Sync",
+        button_label=":double_vertical_bar: Pause Sync",
         warning=":double_vertical_bar: *Pause this Sync?*\n\nMessages, threads, and reactions will not sync until you Resume Sync.",
         log_event="pause_sync",
     )
@@ -1066,7 +1066,7 @@ def handle_resume_sync(body: dict, client: WebClient, logger: Logger, context: d
         prefixes=(actions.CONFIG_RESUME_SYNC,),
         confirm_action=actions.CONFIG_RESUME_SYNC_CONFIRM,
         title="Resume Sync",
-        button_label="Resume Sync",
+        button_label=":arrow_forward: Resume Sync",
         warning=":arrow_forward: *Resume this Sync?*\n\nMessages, threads, and reactions will start syncing again.",
         log_event="resume_sync",
     )

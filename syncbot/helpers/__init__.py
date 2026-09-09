@@ -154,6 +154,7 @@ from helpers.sync_participation import (
     iter_publish_targets,
     origin_publishes_anywhere,
     participation_flags,
+    participation_label,
 )
 from helpers.sync_pipeline import run_sync_pipeline
 from helpers.user_action_echo import (
@@ -354,6 +355,7 @@ __all__ = [
     "iter_publish_targets",
     "origin_publishes_anywhere",
     "participation_flags",
+    "participation_label",
     "run_sync_pipeline",
     "post_meta_exists_for_channel_ts",
     "slack_write_create",

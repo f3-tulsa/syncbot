@@ -19,13 +19,24 @@ from slack.blocks import (
 _logger = logging.getLogger(__name__)
 
 
+def _format_other_channel_ref(channel, workspace, *, paused: bool) -> str:
+    """One other Channel on the Home Members line: code-ticked ``#name (Workspace)``."""
+    raw_name, _is_private = helpers.lookup_channel_meta(channel.channel_id, workspace)
+    label = f"#{str(raw_name or channel.channel_id).removeprefix('#')}"
+    ws_name = helpers.resolve_workspace_name(workspace) if workspace else f"Workspace {channel.workspace_id}"
+    ref = helpers.code_ticked_display_name(label, ws_name)
+    if paused:
+        return f"{ref} `(Paused)`"
+    return ref
+
+
 def _available_channel_label(channel_id: str | None, workspace, title: str | None) -> str:
     """Name of a published channel on Home, with `` (private)`` when it is private.
 
     ``sync.title`` used to be the Slack Channel ID when the bot looked up the
     name before it had joined a private Channel. Ask the publisher workspace
     now that the bot is in it. The Home context wraps this in backticks, same
-    as Type and Publisher — no hash, no emoji.
+    as From and Channel — no hash, no emoji.
     """
     fallback = (title or channel_id or "Unknown").removeprefix("#")
     if channel_id and workspace:
@@ -97,30 +108,28 @@ def _build_inline_channel_sync(
     for sync, my_ch, other_chs, is_paused in published_syncs:
         my_ref = _format_channel_ref(my_ch.channel_id, workspace_record, is_local=True)
 
-        # Workspace names for bracket: local first, then others; append (Paused) per workspace that paused
-        local_name = helpers.resolve_workspace_name(workspace_record) or f"Workspace {workspace_record.id}"
-        if my_ch.status == "paused":
-            local_name = f"{local_name} (Paused)"
-        other_names: list[str] = []
+        other_refs: list[str] = []
         for other_channel in other_chs:
             other_ws = helpers.get_workspace_by_id(other_channel.workspace_id, context=context)
-            name = helpers.resolve_workspace_name(other_ws) if other_ws else f"Workspace {other_channel.workspace_id}"
-            if other_channel.status == "paused":
-                name = f"{name} (Paused)"
-            other_names.append(name)
-        all_ws_names = [local_name] + other_names
+            other_refs.append(
+                _format_other_channel_ref(
+                    other_channel,
+                    other_ws,
+                    paused=other_channel.status == "paused",
+                )
+            )
 
         if is_paused:
             icon = ":double_vertical_bar:"
             toggle_btn = orm.ButtonElement(
-                label="Resume Sync",
+                label=":arrow_forward: Resume Sync",
                 action=f"{actions.CONFIG_RESUME_SYNC}_{sync.id}",
                 value=str(sync.id),
             )
         else:
             icon = ":arrows_counterclockwise:"
             toggle_btn = orm.ButtonElement(
-                label="Pause Sync",
+                label=":double_vertical_bar: Pause Sync",
                 action=f"{actions.CONFIG_PAUSE_SYNC}_{sync.id}",
                 value=str(sync.id),
             )
@@ -132,11 +141,11 @@ def _build_inline_channel_sync(
             status_tag = "Paused"
         else:
             status_tag = "Active"
+        participation = helpers.participation_label(my_ch)
+        context_parts.append(f"Status: `{status_tag} ({participation})`")
 
-        context_parts.append(f"Status: `{status_tag}`")
-
-        if all_ws_names:
-            context_parts.append(f"Members: `{', '.join(all_ws_names)}`")
+        if other_refs:
+            context_parts.append(f"Members: {', '.join(other_refs)}")
 
         if getattr(my_ch, "created_at", None):
             context_parts.append(f"Synced Since: `{my_ch.created_at:%B %d, %Y}`")
@@ -150,13 +159,13 @@ def _build_inline_channel_sync(
         if context_parts:
             blocks.append(block_context("\n".join(context_parts)))
         teardown_btn = orm.ButtonElement(
-            label="Leave Sync",
+            label=":octagonal_sign: Leave Sync",
             action=f"{actions.CONFIG_LEAVE_SYNC}_{sync.id}",
             value=str(sync.id),
             style="danger",
         )
         edit_btn = orm.ButtonElement(
-            label="Edit Sync",
+            label=":pencil2: Edit Sync",
             action=f"{actions.CONFIG_EDIT_SYNC}_c_{my_ch.id}",
             value=f"c:{my_ch.id}",
         )
@@ -167,12 +176,12 @@ def _build_inline_channel_sync(
         if publishers:
             blocks.append(section(f":outbox_tray: <#{my_ch.channel_id}> — _waiting for others to join_"))
             edit_btn = orm.ButtonElement(
-                label="Edit Sync",
+                label=":pencil2: Edit Sync",
                 action=f"{actions.CONFIG_EDIT_SYNC}_c_{my_ch.id}",
                 value=f"c:{my_ch.id}",
             )
             teardown_btn = orm.ButtonElement(
-                label="Leave Sync",
+                label=":octagonal_sign: Leave Sync",
                 action=f"{actions.CONFIG_LEAVE_SYNC}_{sync.id}",
                 value=str(sync.id),
                 style="danger",
@@ -183,7 +192,7 @@ def _build_inline_channel_sync(
                 section(f":outbox_tray: <#{my_ch.channel_id}> — _no publishers remaining; this Sync has ended_")
             )
             teardown_btn = orm.ButtonElement(
-                label="Leave Sync",
+                label=":octagonal_sign: Leave Sync",
                 action=f"{actions.CONFIG_LEAVE_SYNC}_{sync.id}",
                 value=str(sync.id),
                 style="danger",
@@ -215,7 +224,7 @@ def _build_inline_channel_sync(
         else:
             row_buttons.append(
                 orm.ButtonElement(
-                    label="Join Sync",
+                    label=":inbox_tray: Join Sync",
                     action=f"{actions.CONFIG_JOIN_SYNC}_{sync.id}",
                     value=str(sync.id),
                 )

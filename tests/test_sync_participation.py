@@ -2,6 +2,7 @@
 
 import os
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -16,6 +17,7 @@ from helpers.sync_participation import (
     iter_publish_targets,
     origin_publishes_anywhere,
     participation_flags,
+    participation_label,
 )
 from helpers.sync_pipeline import run_sync_pipeline
 
@@ -26,6 +28,13 @@ def test_participation_flags():
     assert participation_flags("publish_and_subscribe") == (True, True)
     assert participation_flags("subscribe_and_publish") == (True, True)
     assert participation_flags(None) == (True, True)
+
+
+def test_participation_label():
+    assert participation_label(SimpleNamespace(publishes=True, subscribes=True)) == "Publish and Subscribe"
+    assert participation_label(SimpleNamespace(publishes=True, subscribes=False)) == "Publish only"
+    assert participation_label(SimpleNamespace(publishes=False, subscribes=True)) == "Subscribe only"
+    assert participation_label(None) == "Publish and Subscribe"
 
 
 @pytest.fixture

@@ -252,12 +252,13 @@ class TestChannelSyncNotices:
         from handlers.channel_sync import _create_sync_notice
 
         both = _create_sync_notice("Ada", publishes=True, subscribes=True)
+        assert both.startswith(":arrows_counterclockwise:")
         assert "created a Sync for this Channel" in both
         assert "send and receive" in both
 
         one = _create_sync_notice("Ada", publishes=True, subscribes=False)
-        assert "one way" in one
-        assert "will not receive" in one
+        assert "will be sent to Workspaces that join" in one
+        assert "receive" not in one
 
     def test_join_notice_names_admin_channel_and_direction(self):
         from handlers.channel_sync import _join_notice
@@ -271,10 +272,10 @@ class TestChannelSyncNotices:
             there_subscribes=True,
             joined=True,
         )
+        assert peer.startswith(":arrows_counterclockwise:")
         assert "Other Admin (Other Workspace)" in peer
         assert "subscribed *#other-channel (Other Workspace)* to this Channel" in peer
-        assert "Messages from this Channel will appear there" in peer
-        assert "will not receive messages from that Channel" in peer
+        assert "Messages from here will be sent to the Channel in the other Workspace" in peer
 
         local = _join_notice(
             admin_label="Ada",
@@ -287,4 +288,3 @@ class TestChannelSyncNotices:
         )
         assert "subscribed this Channel to *#source (HQ)*" in local
         assert "Messages from that Channel will appear here" in local
-        assert "will not receive messages from this Channel" in local

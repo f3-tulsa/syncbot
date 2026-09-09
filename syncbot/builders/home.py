@@ -221,7 +221,7 @@ def _build_configuration_section(
     blocks.append(header("SyncBot Configuration"))
     config_buttons = [
         orm.ButtonElement(
-            label="Refresh",
+            label=":arrows_counterclockwise: Refresh",
             action=actions.CONFIG_REFRESH_HOME,
         ),
     ]
@@ -229,14 +229,14 @@ def _build_configuration_section(
         if helpers.is_settings_visible_for_workspace(workspace_record.team_id):
             config_buttons.append(
                 orm.ButtonElement(
-                    label="Settings",
+                    label=":gear: Settings",
                     action=actions.CONFIG_OPEN_SETTINGS,
                 ),
             )
         if helpers.is_backup_visible_for_workspace(workspace_record.team_id):
             config_buttons.append(
                 orm.ButtonElement(
-                    label="Backup/Restore",
+                    label=":floppy_disk: Backup/Restore",
                     action=actions.CONFIG_BACKUP_RESTORE,
                 ),
             )
@@ -334,11 +334,11 @@ def build_home_tab(
             orm.ActionsBlock(
                 elements=[
                     orm.ButtonElement(
-                        label="Create Group",
+                        label=":raised_hands: Create Group",
                         action=actions.CONFIG_CREATE_GROUP,
                     ),
                     orm.ButtonElement(
-                        label="Join Group",
+                        label=":punch: Join Group",
                         action=actions.CONFIG_JOIN_GROUP,
                     ),
                 ]
@@ -446,13 +446,13 @@ def _build_pending_invite_section(
         orm.ActionsBlock(
             elements=[
                 orm.ButtonElement(
-                    label="Accept",
+                    label=":white_check_mark: Accept",
                     action=f"{actions.CONFIG_ACCEPT_GROUP_REQUEST}_{invite.id}",
                     value=str(invite.id),
                     style="primary",
                 ),
                 orm.ButtonElement(
-                    label="Decline",
+                    label=":x: Decline",
                     action=f"{actions.CONFIG_DECLINE_GROUP_REQUEST}_{invite.id}",
                     value=str(invite.id),
                     style="danger",
@@ -488,24 +488,24 @@ def _build_group_section(
     # Action buttons for this group
     group_actions: list[orm.ButtonElement] = [
         orm.ButtonElement(
-            label="Invite Workspace",
+            label=":incoming_envelope: Invite Workspace",
             action=actions.CONFIG_INVITE_WORKSPACE,
             value=str(group.id),
         ),
         orm.ButtonElement(
-            label="Create Sync",
+            label=":outbox_tray: Create Sync",
             action=actions.CONFIG_CREATE_SYNC,
             value=str(group.id),
         ),
         orm.ButtonElement(
-            label="User Mapping",
+            label=":busts_in_silhouette: User Mapping",
             action=actions.CONFIG_MANAGE_USER_MAPPING,
             value=str(group.id),
         ),
     ]
     group_actions.append(
         orm.ButtonElement(
-            label="Leave Group",
+            label=":wave: Leave Group",
             action=f"{actions.CONFIG_LEAVE_GROUP}_{group.id}",
             style="danger",
             value=str(group.id),
@@ -516,7 +516,7 @@ def _build_group_section(
     if is_owner and helpers.can_disband(group.id, workspace_record.id)[0]:
         group_actions.append(
             orm.ButtonElement(
-                label="Disband Group",
+                label=":wastebasket: Disband Group",
                 action=f"{actions.CONFIG_DISBAND_GROUP}_{group.id}",
                 style="danger",
                 value=str(group.id),
@@ -573,7 +573,7 @@ def _build_group_section(
         if is_owner and member.workspace_id and member.role != "owner":
             role_actions.append(
                 orm.ButtonElement(
-                    label="Promote to Owner",
+                    label=":key: Promote to Owner",
                     action=f"{actions.CONFIG_PROMOTE_TO_OWNER}_{member.id}",
                     value=str(member.id),
                 )
@@ -581,7 +581,7 @@ def _build_group_section(
         if member.workspace_id == workspace_record.id and member.role == "owner" and owner_count > 1:
             role_actions.append(
                 orm.ButtonElement(
-                    label="Give Up Ownership",
+                    label=":information_source: Give Up Ownership",
                     action=f"{actions.CONFIG_DEMOTE_SELF}_{member.id}",
                     value=str(member.id),
                 )
@@ -629,7 +629,7 @@ def _build_group_section(
             orm.ActionsBlock(
                 elements=[
                     orm.ButtonElement(
-                        label="Cancel Invite",
+                        label=":x: Cancel Invite",
                         action=f"{actions.CONFIG_CANCEL_GROUP_REQUEST}_{pending_member.id}",
                         value=str(pending_member.id),
                         style="danger",
@@ -704,7 +704,7 @@ def _build_federation_section(
             orm.ActionsBlock(
                 elements=[
                     orm.ButtonElement(
-                        label="Remove Connection",
+                        label=":octagonal_sign: Remove Connection",
                         action=f"{actions.CONFIG_REMOVE_FEDERATION_CONNECTION}_{fed_member.id}",
                         style="danger",
                         value=str(fed_member.id),

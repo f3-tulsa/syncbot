@@ -73,6 +73,7 @@ def _render(
         patch("builders.channel_sync.DbManager.find_records", side_effect=find_records),
         patch("builders.channel_sync.DbManager.count_records", return_value=0),
         patch("builders.channel_sync.helpers.resolve_workspace_name", return_value="WS"),
+        patch("builders.channel_sync.helpers.lookup_channel_meta", return_value=("partner-ch", False)),
         patch("builders.channel_sync.helpers.get_workspace_by_id", return_value=SimpleNamespace(bot_token=None)),
         patch("builders.channel_sync.helpers.is_workspace_owner", return_value=is_owner),
         patch(
@@ -83,6 +84,29 @@ def _render(
     ):
         _build_inline_channel_sync(blocks, group, workspace_record, other_members=[], context={})
     return blocks
+
+
+def test_synced_row_members_are_partner_channel_ticks():
+    blocks = _render(
+        viewer_ws=PUBLISHER_WS,
+        publisher_ws=PUBLISHER_WS,
+        channels=[_channel(10, PUBLISHER_WS), _channel(11, SUBSCRIBER_WS)],
+    )
+    texts = "\n".join(_context_texts(blocks))
+    assert "Members: `#partner-ch (WS)`" in texts
+    assert "Status: `Active (Publish and Subscribe)`" in texts
+
+
+def test_synced_row_paused_partner_is_tagged():
+    paused = _channel(11, SUBSCRIBER_WS)
+    paused.status = "paused"
+    blocks = _render(
+        viewer_ws=PUBLISHER_WS,
+        publisher_ws=PUBLISHER_WS,
+        channels=[_channel(10, PUBLISHER_WS), paused],
+    )
+    texts = "\n".join(_context_texts(blocks))
+    assert "Members: `#partner-ch (WS)` `(Paused)`" in texts
 
 
 def test_active_row_offers_leave_sync():
@@ -109,6 +133,30 @@ def test_subscriber_active_row_also_offers_leave_sync():
     assert any(a.startswith(actions.CONFIG_LEAVE_SYNC) for a in actions_seen)
     assert not any(a.startswith("unpublish_channel") for a in actions_seen)
     assert not any(a.startswith("stop_sync") for a in actions_seen)
+    texts = "\n".join(_context_texts(blocks))
+    assert "Status: `Active (Subscribe only)`" in texts
+
+
+def test_publisher_only_row_status_includes_participation():
+    blocks = _render(
+        viewer_ws=PUBLISHER_WS,
+        publisher_ws=PUBLISHER_WS,
+        channels=[_channel(10, PUBLISHER_WS, subscribes=False), _channel(11, SUBSCRIBER_WS)],
+    )
+    texts = "\n".join(_context_texts(blocks))
+    assert "Status: `Active (Publish only)`" in texts
+
+
+def test_paused_local_row_status_includes_participation():
+    paused_mine = _channel(10, PUBLISHER_WS)
+    paused_mine.status = "paused"
+    blocks = _render(
+        viewer_ws=PUBLISHER_WS,
+        publisher_ws=PUBLISHER_WS,
+        channels=[paused_mine, _channel(11, SUBSCRIBER_WS)],
+    )
+    texts = "\n".join(_context_texts(blocks))
+    assert "Status: `Paused (Publish and Subscribe)`" in texts
 
 
 def test_active_row_edit_is_first_button():
@@ -118,8 +166,8 @@ def test_active_row_edit_is_first_button():
         channels=[_channel(10, PUBLISHER_WS), _channel(11, SUBSCRIBER_WS)],
     )
     labels = [label for label, _ in _buttons(blocks)]
-    assert labels[0] == "Edit Sync"
-    assert labels == ["Edit Sync", "Pause Sync", "Leave Sync"]
+    assert labels[0] == ":pencil2: Edit Sync"
+    assert labels == [":pencil2: Edit Sync", ":double_vertical_bar: Pause Sync", ":octagonal_sign: Leave Sync"]
     edit_action = _buttons(blocks)[0][1]
     assert edit_action == f"{actions.CONFIG_EDIT_SYNC}_c_10"
 
@@ -131,7 +179,7 @@ def test_subscriber_active_row_edit_then_pause_then_leave():
         channels=[_channel(10, SUBSCRIBER_WS, publishes=False), _channel(11, PUBLISHER_WS)],
     )
     labels = [label for label, _ in _buttons(blocks)]
-    assert labels == ["Edit Sync", "Pause Sync", "Leave Sync"]
+    assert labels == [":pencil2: Edit Sync", ":double_vertical_bar: Pause Sync", ":octagonal_sign: Leave Sync"]
 
 
 def test_waiting_publisher_has_edit_then_leave():
@@ -141,7 +189,7 @@ def test_waiting_publisher_has_edit_then_leave():
         channels=[_channel(10, PUBLISHER_WS)],
     )
     labels = [label for label, _ in _buttons(blocks)]
-    assert labels == ["Edit Sync", "Leave Sync"]
+    assert labels == [":pencil2: Edit Sync", ":octagonal_sign: Leave Sync"]
 
 
 def test_stranded_member_has_leave_without_edit():
@@ -151,7 +199,7 @@ def test_stranded_member_has_leave_without_edit():
         channels=[_channel(10, SUBSCRIBER_WS, publishes=False, subscribes=True)],
     )
     labels = [label for label, _ in _buttons(blocks)]
-    assert labels == ["Leave Sync"]
+    assert labels == [":octagonal_sign: Leave Sync"]
     assert not any(label == "Edit Sync" for label in labels)
 
 
@@ -163,7 +211,7 @@ def test_available_row_has_one_join_action():
         is_owner=True,
     )
     owner_labels = [label for label, _ in _buttons(owner_blocks)]
-    assert owner_labels == ["Join Sync"]
+    assert owner_labels == [":inbox_tray: Join Sync"]
     headers = [
         getattr(block, "label", None) or ""
         for block in owner_blocks
@@ -178,7 +226,7 @@ def test_available_row_has_one_join_action():
         is_owner=False,
     )
     member_labels = [label for label, _ in _buttons(member_blocks)]
-    assert member_labels == ["Join Sync"]
+    assert member_labels == [":inbox_tray: Join Sync"]
 
 
 def test_duplicate_source_disables_join():
