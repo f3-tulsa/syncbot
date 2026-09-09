@@ -47,6 +47,17 @@ from helpers.core import (
     synced_from_line_username,
 )
 from helpers.encryption import decrypt_bot_token, encrypt_bot_token
+from helpers.envelope import (
+    ACTION_ADD,
+    ACTION_CREATE,
+    ACTION_DELETE,
+    ACTION_EDIT,
+    ACTION_REMOVE,
+    KIND_MESSAGE,
+    KIND_REACTION,
+    build_envelope,
+    people_entry,
+)
 from helpers.files import (
     cleanup_temp_files,
     download_slack_files,
@@ -92,6 +103,11 @@ from helpers.oauth import (
     public_base_from_lambda_event,
     remember_public_base,
 )
+from helpers.post_meta import (
+    get_post_records,
+    origin_post_meta_rows,
+    post_meta_exists_for_channel_ts,
+)
 from helpers.refresh import (
     cooldown_message_block,
     index_of_block_with_action,
@@ -117,13 +133,32 @@ from helpers.slack_api import (
     get_bot_info_from_event,
     get_own_bot_id,
     get_own_bot_user_id,
-    get_post_records,
     get_user_info,
     post_message,
     slack_retry,
     update_modal,
 )
+from helpers.slack_write import slack_write_create, slack_write_delete, slack_write_edit
 from helpers.sync_cleanup import purge_sync, purge_sync_channels, purge_workspace
+from helpers.sync_participation import (
+    already_subscribed_to_source,
+    channel_has_membership,
+    channel_publishes,
+    channel_subscribes,
+    find_channel_memberships,
+    find_origin_sync_channel,
+    invalidate_channel_memberships,
+    iter_publish_targets,
+    origin_publishes_anywhere,
+    participation_flags,
+)
+from helpers.sync_pipeline import run_sync_pipeline
+from helpers.user_action_echo import (
+    reaction_echo_fingerprint,
+    remember_user_action,
+    slack_message_ts,
+    take_user_action_echo,
+)
 from helpers.user_map import (
     _get_user_profile,
     _normalize_name,
@@ -148,7 +183,6 @@ from helpers.workspace import (
     get_federated_workspace_for_sync,
     get_group_members,
     get_groups_for_workspace,
-    get_sync_list,
     get_workspace_by_id,
     get_workspace_record,
     lookup_channel_meta,
@@ -195,6 +229,15 @@ __all__ = [
     "delete_message",
     "download_slack_files",
     "encrypt_bot_token",
+    "ACTION_ADD",
+    "ACTION_CREATE",
+    "ACTION_DELETE",
+    "ACTION_EDIT",
+    "ACTION_REMOVE",
+    "KIND_MESSAGE",
+    "KIND_REACTION",
+    "build_envelope",
+    "people_entry",
     "ensure_mapped_target_user_id",
     "blocks_include_body",
     "choose_message_text",
@@ -228,8 +271,8 @@ __all__ = [
     "get_own_bot_id",
     "get_own_bot_user_id",
     "get_post_records",
+    "origin_post_meta_rows",
     "get_request_type",
-    "get_sync_list",
     "get_user_id_from_body",
     "get_user_info",
     "get_user_token",
@@ -295,4 +338,23 @@ __all__ = [
     "slack_retry",
     "update_modal",
     "upload_files_to_slack",
+    "already_subscribed_to_source",
+    "channel_has_membership",
+    "channel_publishes",
+    "channel_subscribes",
+    "find_channel_memberships",
+    "find_origin_sync_channel",
+    "invalidate_channel_memberships",
+    "iter_publish_targets",
+    "origin_publishes_anywhere",
+    "participation_flags",
+    "run_sync_pipeline",
+    "post_meta_exists_for_channel_ts",
+    "slack_write_create",
+    "slack_write_delete",
+    "slack_write_edit",
+    "reaction_echo_fingerprint",
+    "remember_user_action",
+    "slack_message_ts",
+    "take_user_action_echo",
 ]

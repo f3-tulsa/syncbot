@@ -115,7 +115,13 @@ def _home_tab_content_hash(
         for sync in syncs:
             channels = channels_by_sync.get(sync.id, [])
             channel_sig = tuple(
-                (sync_channel.workspace_id, sync_channel.channel_id, sync_channel.status or "active")
+                (
+                    sync_channel.workspace_id,
+                    sync_channel.channel_id,
+                    sync_channel.status or "active",
+                    helpers.channel_publishes(sync_channel),
+                    helpers.channel_subscribes(sync_channel),
+                )
                 for sync_channel in sorted(channels, key=lambda c: (c.workspace_id, c.channel_id))
             )
             sync_channel_tuples.append((sync.id, channel_sig))
@@ -323,7 +329,7 @@ def build_home_tab(
     else:
         # ── Workspace Groups ──────────────────────────────────────
         blocks.append(header("Workspace Groups"))
-        blocks.append(block_context("_Groups of Workspaces that can Publish and Subscribe to Channels._"))
+        blocks.append(block_context("_Groups of Workspaces that can Create Sync and Join Sync._"))
         blocks.append(
             orm.ActionsBlock(
                 elements=[
@@ -353,7 +359,7 @@ def build_home_tab(
         if not my_groups and not pending_invites:
             blocks.append(
                 block_context(
-                    "You are not in any Workspace Groups yet. Create or join a Group before you can Publish or Subscribe to Channels with other Workspaces."
+                    "You are not in any Workspace Groups yet. Create or join a Group before you can Create Sync or Join Sync with other Workspaces."
                 )
             )
         else:
@@ -487,8 +493,8 @@ def _build_group_section(
             value=str(group.id),
         ),
         orm.ButtonElement(
-            label="Publish Channel",
-            action=actions.CONFIG_PUBLISH_CHANNEL,
+            label="Create Sync",
+            action=actions.CONFIG_CREATE_SYNC,
             value=str(group.id),
         ),
         orm.ButtonElement(
