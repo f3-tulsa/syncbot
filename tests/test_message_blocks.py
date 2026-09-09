@@ -199,6 +199,7 @@ class TestHandleMessageEditForwardsLayoutBlocks:
         assert envelope["source_sync_channel_id"] == 1
         assert envelope["people"][0]["user_id"] == "U_SRC"
         assert blocks[0]["type"] == "section"
+        assert blocks[0]["type"] == "section"
         assert "🌭" in blocks[1]["text"]["text"]
 
 
@@ -380,7 +381,39 @@ class TestRewriteContentBlocksRichText:
         out = rewrite_content_blocks(blocks, lambda t: t, map_user, lambda u: f"`{u} (Acme)`")
         els = out[0]["elements"][0]["elements"]
         assert els[0] == {"type": "user", "user_id": "U_TGT"}
-        assert els[2] == {"type": "text", "text": "`U_NONE (Acme)`"}
+        assert els[2] == {"type": "text", "text": "U_NONE (Acme)", "style": {"code": True}}
+
+    def test_rich_text_unmapped_user_uses_code_ticked_display_name(self):
+        from helpers.message_blocks import rewrite_content_blocks
+        from helpers.user_map import unmapped_author_label
+
+        blocks = [
+            {
+                "type": "rich_text",
+                "elements": [
+                    {
+                        "type": "rich_text_section",
+                        "elements": [
+                            {"type": "user", "user_id": "U_NONE"},
+                            {"type": "text", "text": " what's up?"},
+                        ],
+                    }
+                ],
+            }
+        ]
+        out = rewrite_content_blocks(
+            blocks,
+            lambda t: t,
+            lambda _u: None,
+            lambda _u: unmapped_author_label("F3ttown Downrange Q", "F3 T-Town Test"),
+        )
+        els = out[0]["elements"][0]["elements"]
+        assert els[0] == {
+            "type": "text",
+            "text": "F3ttown Downrange Q (F3 T-Town Test)",
+            "style": {"code": True},
+        }
+        assert els[1] == {"type": "text", "text": " what's up?"}
 
 
 class TestBlockKitLimits:

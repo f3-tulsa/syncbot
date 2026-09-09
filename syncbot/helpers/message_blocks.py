@@ -274,7 +274,7 @@ def _rich_text_from_mrkdwn_span(mrkdwn: str, *, style: dict | None = None) -> di
     """Turn ``resolve_channel_references`` output into a rich_text element.
 
     Labeled permalinks become ``type: link`` (do not leave mrkdwn ``<url|label>``
-    in a text node). Channel ticks become ``style.code``. Slack web still chips
+    in a text node). Channel ticks and unmapped people become ``style.code``. Slack web still chips
     ``archives/C…/p…`` as the target; mobile opens the source URL.
     """
     s = (mrkdwn or "").strip()
@@ -322,7 +322,10 @@ def _rewrite_node(
             out = dict(node)
             out["user_id"] = mapped
             return out
-        return {"type": "text", "text": unmapped_user_label(node["user_id"])}
+        return _rich_text_from_mrkdwn_span(
+            unmapped_user_label(node["user_id"]),
+            style=node.get("style") if isinstance(node.get("style"), dict) else None,
+        )
     if node.get("type") == "channel" and node.get("channel_id"):
         return _rich_text_from_mrkdwn_span(
             rewrite_mrkdwn(f"<#{node['channel_id']}>"),

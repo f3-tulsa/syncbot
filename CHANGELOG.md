@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Thread replies, files, and reactions stay on the original message's sync
+- Unmapped people in synced messages render as Slack code, not literal backticks
 
 ## [1.5.4] - 2026-09-09
 
