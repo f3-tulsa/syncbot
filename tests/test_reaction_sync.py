@@ -1,4 +1,4 @@
-"""Tests for per-channel reaction direction, pairing, and apply helpers."""
+"""Tests for per-channel reaction type, pairing, and apply helpers."""
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -142,13 +142,11 @@ class TestApplyOff:
         mapped.assert_not_called()
         leftover.assert_not_called()
 
-    def test_unreact_still_deletes_leftover_hybrid_notices(self):
+    def test_unreact_is_noop(self):
         target = _sync_channel(constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_OFF, channel_id="C_TGT")
-        client = MagicMock()
         with (
             patch("helpers.reaction.get_user_token") as get_token,
-            patch("helpers.reaction.decrypt_bot_token", return_value="xoxb-bot"),
-            patch("helpers.reaction.WebClient", return_value=client),
+            patch("helpers.reaction._mapped_user_for_target") as mapped,
             patch("helpers.reaction.delete_notices_for_unreact") as leftover,
         ):
             result, notice = _apply(action="remove", target_sync_channel=target)
@@ -156,7 +154,8 @@ class TestApplyOff:
         assert result == "skipped"
         assert notice is None
         get_token.assert_not_called()
-        leftover.assert_called_once()
+        mapped.assert_not_called()
+        leftover.assert_not_called()
 
 
 class TestApplyDirect:

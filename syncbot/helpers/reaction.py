@@ -250,9 +250,8 @@ def apply_reaction_to_target(
     path: no target token, or that token hit ``_NO_AUTHORIZE_ERRORS``. Skip the
     probe only when source and target are the same Slack workspace. Federation inbound and
     same-instance cross-workspace still probe — origin having the emoji does not
-    mean the target has it. Direct-only never probes. Off skips apply (unreact still
-    deletes leftover Hybrid notices). ``invalid_name`` always skips; it never becomes
-    a thread notice.
+    mean the target has it. Direct-only never probes. Off does not apply add or remove.
+    ``invalid_name`` always skips; it never becomes a thread notice.
     """
     if source_sync_channel is not None and source_sync_channel.channel_id == target_sync_channel.channel_id:
         return "skipped", None
@@ -262,20 +261,6 @@ def apply_reaction_to_target(
 
     style = reaction_style(target_sync_channel)
     if style == constants.REACTION_STYLE_OFF:
-        if action != "add":
-            ws_id = (
-                event_workspace_id if event_workspace_id is not None else (source_workspace_id or target_workspace.id)
-            )
-            actor_user = source_user_id
-            if actor_user and ws_id is not None:
-                delete_notices_for_unreact(
-                    parent_post_id=str(getattr(target_post_meta, "post_id", None) or ""),
-                    reaction=reaction,
-                    sync_channel=target_sync_channel,
-                    event_workspace_id=ws_id,
-                    event_user_id=actor_user,
-                    client=WebClient(token=decrypt_bot_token(target_workspace.bot_token)),
-                )
         return "skipped", None
 
     target_ts = slack_message_ts(target_post_meta.ts)

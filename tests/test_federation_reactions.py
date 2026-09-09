@@ -260,6 +260,44 @@ class TestFederationInboundTokenLookup:
         decrypt.assert_not_called()
         web_client.assert_not_called()
 
+    def test_off_inbound_unreact_does_not_delete_notices(self):
+        body = {
+            "post_id": "post-1",
+            "channel_id": "C123",
+            "reaction": "thumbsup",
+            "action": "remove",
+            "user_id": "U_REMOTE",
+            "user_name": "Remote Alice",
+        }
+        fed_ws = SimpleNamespace(instance_id="remote-instance")
+        sync_channel = SimpleNamespace(
+            id=101,
+            channel_id="C123",
+            reaction_style="off",
+            publishes=False,
+            subscribes=True,
+        )
+        workspace = SimpleNamespace(id=55, team_id="T_DEST", bot_token="enc-token")
+        post_meta = SimpleNamespace(ts=123.456, post_id="post-1")
+
+        with (
+            patch.object(federation_api, "_resolve_channel_for_federated", return_value=(sync_channel, workspace)),
+            patch.object(federation_api, "_find_post_records", return_value=[post_meta]),
+            patch.object(federation_api, "_ensure_federated_author_mapped", return_value=None),
+            patch("helpers.reaction.get_user_token") as get_token,
+            patch("helpers.reaction.decrypt_bot_token") as decrypt,
+            patch("helpers.reaction.WebClient") as web_client,
+            patch("helpers.reaction.delete_notices_for_unreact") as leftover,
+        ):
+            status, resp = federation_api.handle_message_react(body, fed_ws)
+
+        assert status == 200
+        assert resp["applied"] == 0
+        get_token.assert_not_called()
+        decrypt.assert_not_called()
+        web_client.assert_not_called()
+        leftover.assert_not_called()
+
     def test_hybrid_inbound_without_token_probes_then_threads(self):
         body = {
             "post_id": "post-1",

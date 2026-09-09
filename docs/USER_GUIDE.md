@@ -105,9 +105,9 @@ Reactions follow the same publishing and subscribing participation as messages a
 
 - **Hybrid** — try a native reaction first; if that person has not authorized (or their permission there is no longer valid), SyncBot posts a short thread notice instead. Custom emoji the other workspace does not have are skipped, even if SyncBot would otherwise post a thread notice.
 - **Direct** — native emoji on the synced message, as the mapped person in that workspace. That person must have clicked **Authorize SyncBot** there. Custom emoji the other workspace does not have are skipped.
-- **Off** — do not apply incoming reactions in this workspace. Messages and files still sync. Turning Off later does not remove reactions that already landed.
+- **Off** — do not apply incoming reactions in this workspace, including later unreacts. Messages and files still sync. Turning Off later does not remove reactions that already landed, whether those were native emoji or Hybrid thread notices.
 
-Removing a reaction removes that person's native emoji on target channels when they have authorized SyncBot there, and deletes their Hybrid thread notices (including notices that were reactions to those notices). Deleting a Hybrid notice in one workspace only removes it there — other workspaces and the original native reaction stay. Each person's notices are independent; human replies under a notice are not deleted. Reactions are never written back into the channel where they started.
+On a Hybrid or Direct target, removing a reaction removes that person's native emoji when they have authorized SyncBot there, and deletes their Hybrid thread notices (including notices that were reactions to those notices). Deleting a Hybrid notice in one workspace only removes it there — other workspaces and the original native reaction stay. Each person's notices are independent; human replies under a notice are not deleted. Reactions are never written back into the channel where they started.
 
 ## Pause / Resume / Leave
 

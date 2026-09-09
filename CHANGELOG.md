@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Synced messages and ordinary file shares can post as the mapped person in the other workspace when they have authorized there
 - A Channel can publish only, subscribe only, or both; a second publisher stays in the same channel sync until someone subscribes
 - One Channel can subscribe to more than one distinct published Channel
-- Reaction type Off skips incoming reactions on a subscribing Channel
+- Reaction type Off does not apply incoming reaction add or remove on a subscribing Channel
 
 ### Changed
 
