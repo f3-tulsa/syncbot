@@ -416,7 +416,26 @@ class TestResolveChannelReferences:
         ws = self._make_workspace(team_id="T123", name="Sprock Dev Beta")
         url = "https://sprockdevbeta.slack.com/archives/C0APSA79WR4/p1788488496065219"
         result = helpers.resolve_channel_references(f"see {url}", client, ws)
-        assert result == f"see <{url}|Message in #blackops (Sprock Dev Beta)>"
+        assert result == f"see <{url}|message in #blackops (Sprock Dev Beta)>"
+
+    def test_message_permalink_keeps_existing_display_text(self):
+        client = self._make_client(channel_name="blackops")
+        ws = self._make_workspace(team_id="T123", name="Sprock Dev Beta")
+        url = "https://sprockdevbeta.slack.com/archives/C0APSA79WR4/p1788488496065219"
+        result = helpers.resolve_channel_references(f"see <{url}|my preblast>", client, ws)
+        assert result == f"see <{url}|my preblast>"
+        client.conversations_info.assert_not_called()
+
+    def test_message_permalink_url_shaped_label_is_replaced(self):
+        client = self._make_client(channel_name="ao-19r")
+        ws = self._make_workspace(team_id="T123", name="F3 T-Town Test")
+        url = "https://f3ttown-test.slack.com/archives/C0AQNL0TZEC/p1788983423255249"
+        result = helpers.resolve_channel_references(
+            f"<{url}|This>? Or this: <{url}|{url}>",
+            client,
+            ws,
+        )
+        assert result == (f"<{url}|This>? Or this: <{url}|message in #ao-19r (F3 T-Town Test)>")
 
     def test_message_permalink_uses_subdomain_when_channel_unknown(self):
         client = MagicMock()
@@ -427,7 +446,7 @@ class TestResolveChannelReferences:
             None,
         )
         assert result == (
-            "<https://sprockdevbeta.slack.com/archives/C0APSA79WR4/p1788488496065219|Message in sprockdevbeta>"
+            "<https://sprockdevbeta.slack.com/archives/C0APSA79WR4/p1788488496065219|message in sprockdevbeta>"
         )
 
 

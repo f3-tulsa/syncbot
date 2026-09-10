@@ -45,7 +45,7 @@ Do not show Slack API scope names on **Authorize SyncBot**. Add new user scopes 
 - Channels may participate in multiple syncs for fan-in. A Channel may be published in more than one group. Reject a second subscription by one workspace to the same published source, but allow a target already used in another sync. Participation controls reaction direction; keep Hybrid, Direct, or Off reaction choices and do not revive reaction-direction action IDs. Off is a no-op for reaction add and remove.
 - User Mapping opens from DB only; Auto Map Now updates the open modal via `view_id` (not Home `views.publish`); do not `users.list` on open/Refresh List/Auto Map Now/join or to fan out Home. On-the-fly author map is one person, email only (`ensure_mapped_target_user_id`).
 - Sync Block Kit from `event.blocks`, not truncated `event.text`. Drop `actions`/`input`. Do not probe target emoji for message bodies.
-- Message-body `#channel` is a source code-tick; permalinks stay labeled source `archives/C…/p…` URLs (mobile opens them; Slack web Private chip is accepted). Never use a target twin, `slack://`, or `app.slack.com/client`.
+- Message-body `#channel` is a source code-tick. Convert Slack `message_mention` to `{type: link}`. Unlabeled permalinks get `message in #channel (Workspace)`; existing link text stays. Never use a target twin, `slack://`, or `app.slack.com/client`.
 
 ## Optional: CI parity check
 

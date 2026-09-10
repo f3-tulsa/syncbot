@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- version list -->
 
+## [Unreleased]
+
+### Fixed
+
+- Unlabeled source permalinks and Slack `message_mention` become a `message in #channel (Workspace)` link; existing link text is left alone
+
 
 ## [1.6.0] - 2026-09-09
 

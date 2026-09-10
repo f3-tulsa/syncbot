@@ -15,6 +15,7 @@ from db import DbManager, schemas
 from helpers._cache import _CACHE, _USER_INFO_CACHE_TTL, _cache_get, _cache_set
 from helpers.core import code_ticked_display_name, safe_get
 from helpers.encryption import decrypt_bot_token
+from helpers.message_blocks import is_url_display_text
 from helpers.slack_api import _users_info, get_user_info, slack_retry
 from helpers.workspace import (
     get_workspace_by_id,
@@ -743,7 +744,7 @@ _CHANNEL_MENTION = re.compile(r"<#(C[A-Z0-9]+)(?:\|([^>]*))?>")
 _MESSAGE_PERMALINK = re.compile(
     r"<?(https://(?:app\.slack\.com/client/T[A-Z0-9]+/(C[A-Z0-9]+)/[\d.]+|"
     r"([a-z0-9][a-z0-9-]*)\.slack\.com/archives/(C[A-Z0-9]+)/p\d+(?:\?[^\s>]*)?))"
-    r"(?:\|[^>]*)?>?"
+    r"(?:\|([^>]+))?>?"
 )
 # Lookahead so greedy C[A-Z0-9]+ does not backtrack into /p permalinks.
 _CHANNEL_ARCHIVE_URL = re.compile(
@@ -792,18 +793,22 @@ def _message_permalink_label(
     place = _hash_channel_label(_lookup_channel_name(source_client, channel_id), channel_id)
     where = ws_name or domain
     if place and where:
-        return f"Message in {place} ({where})"
+        return f"message in {place} ({where})"
     if place:
-        return f"Message in {place}"
+        return f"message in {place}"
     if where:
-        return f"Message in {where}"
-    return "Source message"
+        return f"message in {where}"
+    return "source message"
 
 
 def _rewrite_message_permalink(match: re.Match, source_client: WebClient | None, ws_name: str | None) -> str:
     url = match.group(1)
+    existing = (match.group(5) or "").strip()
+    if existing and not is_url_display_text(existing, url):
+        return f"<{url}|{existing}>"
     cid = match.group(2) or match.group(4)
-    return f"<{url}|{_message_permalink_label(cid, match.group(3), source_client, ws_name)}>"
+    label = _message_permalink_label(cid, match.group(3), source_client, ws_name)
+    return f"<{url}|{label}>"
 
 
 def _rewrite_channel_archive_url(match: re.Match, source_client: WebClient | None, ws_name: str | None) -> str:
@@ -823,11 +828,9 @@ def resolve_channel_references(
     emit target ``<#C>``, ``slack://``, ``app.slack.com/client``, or channel-only
     ``archives/C`` URLs.
 
-    Message permalinks (``/archives/C…/p…``) stay as labeled source URLs.
-    Those open the source message in the Slack **mobile** app. Slack **web**
-    treats the same URL as a message in the current target workspace and shows
-    a Private chip; that is accepted — do not chase other URL schemes to fix
-    the desktop browser.
+    Message permalinks (``/archives/C…/p…``) without display text become
+    ``<url|message in #channel (Workspace)>``. Existing link text is left
+    alone.
     """
     if not msg_text:
         return msg_text

@@ -14,6 +14,10 @@ from helpers.slack_write import slack_write_create
 from tests.event_fixtures import make_event_context
 
 
+def _rich_text(*elements):
+    return [{"type": "rich_text", "elements": [{"type": "rich_text_section", "elements": list(elements)}]}]
+
+
 def _preblast_blocks():
     return [
         {
@@ -327,34 +331,71 @@ class TestRewriteContentBlocksRichText:
         )
         assert out[0]["text"]["text"] == "Where: `#ao (Acme)`"
 
-    def test_rich_text_permalink_link_gets_source_label(self):
+    def test_unlabeled_permalink_becomes_labeled_link(self):
         from helpers.message_blocks import rewrite_content_blocks
 
-        url = "https://sprockdevbeta.slack.com/archives/C0APSA79WR4/p1788488496065219"
-        blocks = [
+        url = "https://f3ttown-test.slack.com/archives/C0AQNL0TZEC/p1788983423255249"
+        label = "message in #ao-19r (F3 T-Town Test)"
+        sources = (
+            {"type": "link", "url": url},
             {
-                "type": "rich_text",
-                "elements": [
-                    {
-                        "type": "rich_text_section",
-                        "elements": [{"type": "link", "url": url}],
-                    }
-                ],
-            }
-        ]
+                "type": "message_mention",
+                "url": url,
+                "channel_id": "C0AQNL0TZEC",
+                "message_ts": "1788983423.255249",
+            },
+        )
 
         def rewrite_mrkdwn(text: str) -> str:
-            if text == url:
-                return f"<{url}|Message in #blackops (Sprock Dev Beta)>"
-            return text
+            return f"<{url}|{label}>" if text == url else text
 
-        out = rewrite_content_blocks(blocks, rewrite_mrkdwn, lambda _u: None, lambda u: u)
+        for source in sources:
+            out = rewrite_content_blocks(_rich_text(source), rewrite_mrkdwn, lambda _u: None, lambda u: u)
+            el = out[0]["elements"][0]["elements"][0]
+            assert el == {"type": "link", "url": url, "text": label}, source
+            assert el.get("channel_id") is None
+            assert el.get("message_ts") is None
+
+    def test_permalink_keeps_author_text(self):
+        from helpers.message_blocks import rewrite_content_blocks
+
+        url = "https://f3ttown-test.slack.com/archives/C0AQNL0TZEC/p1788983423255249"
+        blocks = _rich_text({"type": "link", "url": url, "text": "This", "is_slack_url": True})
+        out = rewrite_content_blocks(blocks, lambda t: t, lambda _u: None, lambda u: u)
+        assert out[0]["elements"][0]["elements"][0] == {"type": "link", "url": url, "text": "This"}
+
+    def test_url_shaped_link_text_is_relabeled(self):
+        from helpers.message_blocks import rewrite_content_blocks
+
+        url = "https://f3ttown-test.slack.com/archives/C0AQNL0TZEC/p1788983423255249"
+        label = "message in #ao-19r (F3 T-Town Test)"
+        blocks = _rich_text({"type": "link", "url": url, "text": url})
+        out = rewrite_content_blocks(
+            blocks,
+            lambda t: f"<{url}|{label}>" if t == url else t,
+            lambda _u: None,
+            lambda u: u,
+        )
+        assert out[0]["elements"][0]["elements"][0] == {"type": "link", "url": url, "text": label}
+
+    def test_mrkdwn_permalink_in_text_node_becomes_a_link(self):
+        from helpers.message_blocks import rewrite_content_blocks
+
+        url = "https://f3ttown-test.slack.com/archives/C0AQNL0TZEC/p1788983423255249"
+        label = "message in #ao-19r (F3 T-Town Test)"
+        blocks = _rich_text({"type": "text", "text": f"see {url} ok"})
+        out = rewrite_content_blocks(
+            blocks,
+            lambda t: t.replace(url, f"<{url}|{label}>"),
+            lambda _u: None,
+            lambda u: u,
+        )
         els = out[0]["elements"][0]["elements"]
-        assert els[0] == {
-            "type": "link",
-            "url": url,
-            "text": "Message in #blackops (Sprock Dev Beta)",
-        }
+        assert els == [
+            {"type": "text", "text": "see "},
+            {"type": "link", "url": url, "text": label},
+            {"type": "text", "text": " ok"},
+        ]
 
     def test_rich_text_user_mapped_and_unmapped(self):
         from helpers.message_blocks import rewrite_content_blocks
