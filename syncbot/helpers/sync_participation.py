@@ -11,9 +11,10 @@ _logger = logging.getLogger(__name__)
 
 
 def invalidate_channel_memberships(channel_id: str | None) -> None:
-    """Drop cached membership entries for *channel_id* (all active/all keys)."""
+    """Drop cached membership and publish-target entries for *channel_id*."""
     if channel_id:
         _cache_delete_prefix(f"channel_memberships:{channel_id}:")
+        _cache_delete_prefix(f"publish_targets:{channel_id}")
 
 
 def parse_participation_flags(value: str | None) -> tuple[bool, bool]:
@@ -101,14 +102,7 @@ def channel_has_membership(channel_id: str) -> bool:
     """True when any non-deleted SyncChannel exists for *channel_id* (paused or active)."""
     if not channel_id:
         return False
-    rows = DbManager.find_records(
-        schemas.SyncChannel,
-        [
-            schemas.SyncChannel.channel_id == channel_id,
-            schemas.SyncChannel.deleted_at.is_(None),
-        ],
-    )
-    return bool(rows)
+    return bool(get_channel_memberships(channel_id, active_only=False))
 
 
 def origin_publishes_anywhere(channel_id: str) -> bool:
@@ -138,6 +132,11 @@ def iter_publish_targets(
     if not channel_id:
         return []
 
+    cache_key = f"publish_targets:{channel_id}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     publish_sync_ids: set[int] = set()
     origin_keys: set[tuple[int, str]] = set()
     for sc, ws in get_channel_memberships(channel_id, active_only=True):
@@ -147,36 +146,46 @@ def iter_publish_targets(
         origin_keys.add((ws.id, sc.channel_id))
 
     if not publish_sync_ids:
+        _cache_set(cache_key, [])
         return []
+
+    sync_id_list = list(publish_sync_ids)
+    sync_rows = DbManager.find_records(
+        schemas.Sync,
+        [schemas.Sync.id.in_(sync_id_list)],
+    )
+    sync_by_id = {s.id: s for s in sync_rows}
+
+    peers = DbManager.find_join_records2(
+        left_cls=schemas.SyncChannel,
+        right_cls=schemas.Workspace,
+        filters=[
+            schemas.SyncChannel.sync_id.in_(sync_id_list),
+            schemas.SyncChannel.deleted_at.is_(None),
+            schemas.SyncChannel.status == "active",
+        ],
+    )
 
     targets: list[tuple[schemas.SyncChannel, schemas.Workspace]] = []
     seen: set[tuple[int, str]] = set()
-    for sync_id in publish_sync_ids:
-        sync = DbManager.get_record(schemas.Sync, sync_id)
+    for sc, ws in peers:
+        sync = sync_by_id.get(sc.sync_id)
         allowed_workspaces: set[int] | None = None
         if sync is not None and getattr(sync, "sync_mode", None) == "direct" and sync.target_workspace_id:
             allowed_workspaces = {sync.target_workspace_id}
             if sync.publisher_workspace_id:
                 allowed_workspaces.add(sync.publisher_workspace_id)
-        peers = DbManager.find_join_records2(
-            left_cls=schemas.SyncChannel,
-            right_cls=schemas.Workspace,
-            filters=[
-                schemas.SyncChannel.sync_id == sync_id,
-                schemas.SyncChannel.deleted_at.is_(None),
-                schemas.SyncChannel.status == "active",
-            ],
-        )
-        for sc, ws in peers:
-            if allowed_workspaces is not None and ws.id not in allowed_workspaces:
-                continue
-            key = (ws.id, sc.channel_id)
-            if key in origin_keys or key in seen:
-                continue
-            if not channel_subscribes(sc):
-                continue
-            seen.add(key)
-            targets.append((sc, ws))
+        if allowed_workspaces is not None and ws.id not in allowed_workspaces:
+            continue
+        key = (ws.id, sc.channel_id)
+        if key in origin_keys or key in seen:
+            continue
+        if not channel_subscribes(sc):
+            continue
+        seen.add(key)
+        targets.append((sc, ws))
+
+    _cache_set(cache_key, targets)
     return targets
 
 
@@ -195,20 +204,21 @@ def already_subscribed_to_source(
             schemas.SyncChannel.deleted_at.is_(None),
         ],
     )
-    for sc in rows:
-        if exclude_sync_id is not None and sc.sync_id == exclude_sync_id:
-            continue
-        if not channel_subscribes(sc):
-            continue
-        publishers = DbManager.find_records(
-            schemas.SyncChannel,
-            [
-                schemas.SyncChannel.sync_id == sc.sync_id,
-                schemas.SyncChannel.workspace_id == source_workspace_id,
-                schemas.SyncChannel.channel_id == source_channel_id,
-                schemas.SyncChannel.deleted_at.is_(None),
-            ],
-        )
-        if any(channel_publishes(p) for p in publishers):
-            return True
-    return False
+    candidate_sync_ids = [
+        sc.sync_id
+        for sc in rows
+        if channel_subscribes(sc) and (exclude_sync_id is None or sc.sync_id != exclude_sync_id)
+    ]
+    if not candidate_sync_ids:
+        return False
+
+    publishers = DbManager.find_records(
+        schemas.SyncChannel,
+        [
+            schemas.SyncChannel.sync_id.in_(candidate_sync_ids),
+            schemas.SyncChannel.workspace_id == source_workspace_id,
+            schemas.SyncChannel.channel_id == source_channel_id,
+            schemas.SyncChannel.deleted_at.is_(None),
+        ],
+    )
+    return any(channel_publishes(p) for p in publishers)

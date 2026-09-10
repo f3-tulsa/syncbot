@@ -185,6 +185,26 @@ def _post_target_text(
     return ts, split_file_ts, as_user
 
 
+def _mentioned_users_from_envelope(envelope: dict[str, Any]) -> list[dict]:
+    """Mention rows from envelope ``people`` (author excluded)."""
+    people = envelope.get("people") or []
+    source_user_id = envelope.get("source_user_id")
+    out: list[dict] = []
+    for person in people:
+        uid = person.get("user_id")
+        if not uid or uid == source_user_id:
+            continue
+        out.append(
+            {
+                "user_id": uid,
+                "user_name": person.get("name") or uid,
+                "email": person.get("email"),
+                "user_profile_url": person.get("avatar_url"),
+            }
+        )
+    return out
+
+
 def slack_write_create(
     *,
     envelope: dict[str, Any],
@@ -231,8 +251,8 @@ def slack_write_create(
     write_token, posted_as = pick_write_token(workspace, mapped_user_id)
     use_customize = posted_as is None
 
-    mentioned_users: list[dict] = []
-    if source_client and msg_text:
+    mentioned_users = _mentioned_users_from_envelope(envelope)
+    if source_client and msg_text and "<@" in msg_text and not mentioned_users:
         mentioned_users = parse_mentioned_users(msg_text, source_client)
 
     adapted_text = msg_text
@@ -363,7 +383,9 @@ def slack_write_edit(
     target_blocks: list[dict] = []
     source_ws = get_workspace_by_id(source_workspace_id) if source_workspace_id else None
     if source_client:
-        mentioned_users = parse_mentioned_users(msg_text, source_client)
+        mentioned_users = _mentioned_users_from_envelope(envelope)
+        if msg_text and "<@" in msg_text and not mentioned_users:
+            mentioned_users = parse_mentioned_users(msg_text, source_client)
         adapted_text = apply_mentioned_users(
             msg_text,
             source_client,

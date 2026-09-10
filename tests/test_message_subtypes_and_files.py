@@ -45,7 +45,9 @@ class TestMessageSubtypeAllowlist:
             patch("handlers.message.run_claimed", side_effect=lambda _body, fn: fn()),
             patch("handlers.message.helpers.channel_has_membership", return_value=True),
             patch("handlers.message.helpers.origin_publishes_anywhere", return_value=True),
+            patch("handlers.message.helpers.iter_publish_targets", return_value=[object()]),
             patch("handlers.message.helpers.post_meta_exists_for_channel_ts", return_value=False),
+            patch("handlers.message.helpers.take_user_action_echo", return_value=False),
         ):
             respond_to_message_event(body, MagicMock(), MagicMock(), {})
         thread_reply.assert_called_once()
@@ -63,7 +65,9 @@ class TestMessageSubtypeAllowlist:
             patch("handlers.message.run_claimed", side_effect=lambda _body, fn: fn()),
             patch("handlers.message.helpers.channel_has_membership", return_value=True),
             patch("handlers.message.helpers.origin_publishes_anywhere", return_value=True),
+            patch("handlers.message.helpers.iter_publish_targets", return_value=[object()]),
             patch("handlers.message.helpers.post_meta_exists_for_channel_ts", return_value=False),
+            patch("handlers.message.helpers.take_user_action_echo", return_value=False),
         ):
             respond_to_message_event(body, MagicMock(), MagicMock(), {})
         new_post.assert_called_once()

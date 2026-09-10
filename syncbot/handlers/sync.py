@@ -23,6 +23,38 @@ def handle_app_home_opened(
 ) -> None:
     """Handle the ``app_home_opened`` event by publishing the Home tab."""
     helpers.purge_stale_soft_deletes()
+    team_id = helpers.get_team_id_from_body(body)
+    user_id = helpers.get_user_id_from_body(body)
+    if team_id and user_id:
+        workspace_record = helpers.get_workspace_record(team_id, body, context, client)
+        if workspace_record:
+            is_admin = helpers.is_workspace_admin(client, user_id)
+            is_manager = helpers.is_workspace_manager(client, user_id, team_id)
+            extra_manager_ids = tuple(sorted(helpers.extra_manager_user_ids(team_id)))
+            current_hash = builders._home_tab_content_hash(
+                workspace_record,
+                user_id,
+                is_manager=is_manager,
+                is_admin=is_admin,
+                extra_manager_ids=extra_manager_ids,
+            )
+            hash_key = builders.home_tab_hash_key(team_id, user_id)
+            blocks_key = f"home_tab_blocks:{team_id}:{user_id}"
+            if helpers._cache_get(hash_key) == current_hash:
+                cached_blocks = helpers._cache_get(blocks_key)
+                if cached_blocks is not None:
+                    client.views_publish(user_id=user_id, view={"type": "home", "blocks": cached_blocks})
+                    return
+            builders.build_home_tab(
+                body,
+                client,
+                logger,
+                context,
+                user_id=user_id,
+                workspace=workspace_record,
+                content_hash=current_hash,
+            )
+            return
     builders.build_home_tab(body, client, logger, context)
 
 
@@ -103,7 +135,16 @@ def handle_refresh_home(
 
     # Names refresh at most daily in get_workspace_record / _maybe_refresh_workspace_name.
     # Do not team_info() every installed workspace on Refresh.
-    block_dicts = builders.build_home_tab(body, client, logger, context, user_id=user_id, return_blocks=True)
+    block_dicts = builders.build_home_tab(
+        body,
+        client,
+        logger,
+        context,
+        user_id=user_id,
+        return_blocks=True,
+        workspace=workspace_record,
+        content_hash=current_hash,
+    )
     if block_dicts is None:
         return
     client.views_publish(user_id=user_id, view={"type": "home", "blocks": block_dicts})

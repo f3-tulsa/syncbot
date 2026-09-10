@@ -69,16 +69,12 @@ def post_meta_exists_for_channel_ts(channel_id: str, ts: str | float) -> bool:
         float_ts = float(ts)
     except (TypeError, ValueError):
         return False
-    sync_channels = DbManager.find_records(
-        schemas.SyncChannel,
-        [
-            schemas.SyncChannel.channel_id == channel_id,
-            schemas.SyncChannel.deleted_at.is_(None),
-        ],
-    )
-    if not sync_channels:
+    from helpers.sync_participation import get_channel_memberships
+
+    memberships = get_channel_memberships(channel_id, active_only=False)
+    if not memberships:
         return False
-    ids = [sc.id for sc in sync_channels]
+    ids = [sc.id for sc, _ws in memberships]
     rows = DbManager.find_records(
         schemas.PostMeta,
         [

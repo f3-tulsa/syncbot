@@ -352,7 +352,10 @@ class TestResolveChannelReferences:
     """Source #channel ticks and labeled message permalinks."""
 
     def setup_method(self):
-        helpers._CACHE.clear()
+        from helpers._cache import clear_all_caches, clear_request_scope
+
+        clear_all_caches()
+        clear_request_scope()
 
     def _make_workspace(self, team_id="T123", name="Acme"):
         ws = MagicMock()

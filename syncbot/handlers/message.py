@@ -47,29 +47,23 @@ def _event_is_bot_post(event: dict) -> bool:
     return bool(nested.get("bot_id") or nested.get("subtype") == "bot_message")
 
 
-def _parse_event_fields(body: dict, client: WebClient) -> EventContext:
-    """Extract the common fields every message handler needs."""
+def _parse_event_fields_light(body: dict) -> EventContext:
+    """Extract message fields without Slack API calls.
+
+    Layout blocks and text come from the event payload only. Mention profiles
+    and ``conversations.history`` are filled later by
+    :func:`_enrich_event_fields_for_sync` after membership and publish gates.
+    """
     event: dict = body.get("event", {})
     layout_blocks = helpers.build_content_blocks_for_sync(helpers.get_event_layout_blocks(event))
-    if not layout_blocks and _event_is_bot_post(event):
-        layout_blocks = helpers.build_content_blocks_for_sync(helpers.fetch_message_layout_blocks(client, event))
     event_text = helpers.safe_get(event, "text") or helpers.safe_get(event, "message", "text")
     msg_text = helpers.choose_message_text(event_text, layout_blocks)
-    mentioned_users = helpers.parse_mentioned_users(msg_text, client)
-    extra_ids = [
-        uid
-        for uid in helpers.collect_user_ids_from_blocks(layout_blocks)
-        if uid not in {u.get("user_id") for u in mentioned_users}
-    ]
-    if extra_ids:
-        mentioned_users.extend(helpers.parse_mentioned_users("".join(f"<@{uid}>" for uid in extra_ids), client))
-
     return EventContext(
         team_id=helpers.get_team_id_from_body(body),
         channel_id=helpers.safe_get(event, "channel"),
         user_id=(helpers.safe_get(event, "user") or helpers.safe_get(event, "message", "user")),
         msg_text=msg_text,
-        mentioned_users=mentioned_users,
+        mentioned_users=[],
         thread_ts=helpers.safe_get(event, "thread_ts"),
         ts=(
             helpers.safe_get(event, "message", "ts")
@@ -80,6 +74,37 @@ def _parse_event_fields(body: dict, client: WebClient) -> EventContext:
         reply_broadcast=helpers.safe_get(event, "subtype") in ("thread_broadcast", "reply_broadcast"),
         content_blocks=layout_blocks,
     )
+
+
+def _enrich_event_fields_for_sync(body: dict, client: WebClient, ctx: EventContext) -> EventContext:
+    """Resolve mentions and bot layout via Slack after publish gates pass."""
+    event: dict = body.get("event", {})
+    layout_blocks = list(ctx.get("content_blocks") or [])
+    if not layout_blocks and _event_is_bot_post(event):
+        layout_blocks = helpers.build_content_blocks_for_sync(helpers.fetch_message_layout_blocks(client, event))
+        event_text = helpers.safe_get(event, "text") or helpers.safe_get(event, "message", "text")
+        ctx["msg_text"] = helpers.choose_message_text(event_text, layout_blocks)
+        ctx["content_blocks"] = layout_blocks
+
+    mentioned_users = helpers.parse_mentioned_users(ctx.get("msg_text") or "", client)
+    extra_ids = [
+        uid
+        for uid in helpers.collect_user_ids_from_blocks(layout_blocks)
+        if uid not in {u.get("user_id") for u in mentioned_users}
+    ]
+    if extra_ids:
+        mentioned_users.extend(helpers.parse_mentioned_users("".join(f"<@{uid}>" for uid in extra_ids), client))
+    ctx["mentioned_users"] = mentioned_users
+    return ctx
+
+
+def _parse_event_fields(body: dict, client: WebClient) -> EventContext:
+    """Extract message fields including Slack mention/history enrichment.
+
+    Prefer :func:`_parse_event_fields_light` on the hot path and enrich only
+    after membership and publish checks.
+    """
+    return _enrich_event_fields_for_sync(body, client, _parse_event_fields_light(body))
 
 
 def _build_file_context(body: dict, client: WebClient, logger: Logger) -> tuple[list[dict], list[dict]]:
@@ -460,7 +485,7 @@ def respond_to_message_event(
     context: dict,
 ) -> None:
     """Dispatch incoming message events to the appropriate sub-handler."""
-    ctx = _parse_event_fields(body, client)
+    ctx = _parse_event_fields_light(body)
     event_type = helpers.safe_get(body, "event", "type")
     event_subtype = ctx["event_subtype"]
 
@@ -531,15 +556,24 @@ def respond_to_message_event(
             return
         if not helpers.origin_publishes_anywhere(channel_id):
             return
-        photo_blocks, direct_files = _build_file_context(body, client, logger)
+
+        has_targets = bool(helpers.iter_publish_targets(channel_id))
+        if has_targets:
+            _enrich_event_fields_for_sync(body, client, ctx)
+            photo_blocks, direct_files = _build_file_context(body, client, logger)
+        else:
+            # Origin PostMeta still needed for later join/thread/reaction; skip Slack.
+            photo_blocks, direct_files = [], []
+
         has_files = bool(photo_blocks or direct_files)
-        if is_create and (event_subtype != "file_share" or ctx["msg_text"] != "" or has_files):
+        if is_create and (event_subtype != "file_share" or ctx["msg_text"] != "" or has_files or not has_targets):
             if not ctx["thread_ts"]:
                 _handle_new_post(body, client, logger, ctx, photo_blocks, direct_files)
             else:
                 _handle_thread_reply(body, client, logger, ctx, photo_blocks, direct_files)
         elif event_subtype == "message_changed":
-            _handle_message_edit(client, logger, ctx, photo_blocks)
+            if has_targets:
+                _handle_message_edit(client, logger, ctx, photo_blocks)
         elif event_subtype == "message_deleted":
             _handle_message_delete(ctx, logger)
 

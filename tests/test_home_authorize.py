@@ -438,3 +438,33 @@ class TestRefreshIsAllowedForEveryone:
 
         find.assert_not_called()
         client.team_info.assert_not_called()
+
+
+class TestAppHomeOpenedHashShortCircuit:
+    def test_cached_hash_and_blocks_skip_rebuild(self):
+        from handlers.sync import handle_app_home_opened
+
+        client = MagicMock()
+        body = {"team_id": "T1", "event": {"user": "U1"}, "user": {"id": "U1"}}
+        cached_blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": "cached"}}]
+
+        with (
+            patch("handlers.sync.helpers.purge_stale_soft_deletes"),
+            patch("handlers.sync.helpers.get_workspace_record", return_value=WORKSPACE),
+            patch("handlers.sync.helpers.is_workspace_admin", return_value=True),
+            patch("handlers.sync.helpers.is_workspace_manager", return_value=True),
+            patch("handlers.sync.helpers.extra_manager_user_ids", return_value=[]),
+            patch("handlers.sync.builders._home_tab_content_hash", return_value="same-hash"),
+            patch(
+                "handlers.sync.helpers._cache_get",
+                side_effect=lambda key: "same-hash" if "hash" in key else cached_blocks,
+            ),
+            patch("handlers.sync.builders.build_home_tab") as build,
+        ):
+            handle_app_home_opened(body, client, MagicMock(), {})
+
+        build.assert_not_called()
+        client.views_publish.assert_called_once_with(
+            user_id="U1",
+            view={"type": "home", "blocks": cached_blocks},
+        )

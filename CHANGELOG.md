@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Code refactor; remove dead code, use verb prefixes for helpers, lockstep group invite Slack IDs
+- Message and reaction sync skip Slack lookups until the channel has membership and publish targets
+- File shares take the message ts from the upload response when present, with a shorter files.info fallback
+- Home tab reopen skips a rebuild when the content hash is unchanged
 
 
 ## [1.6.1] - 2026-09-10

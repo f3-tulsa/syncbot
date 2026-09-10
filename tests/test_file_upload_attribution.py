@@ -214,6 +214,20 @@ class TestUploadReplyBroadcast:
 
 
 class TestExtractFileMessageTs:
+    def test_uses_upload_response_shares_without_files_info(self):
+        from helpers.files import _extract_file_message_ts
+
+        client = MagicMock()
+        upload = {
+            "file": {
+                "id": "F1",
+                "shares": {"public": {"C1": [{"ts": "200.0"}]}},
+            }
+        }
+        ts = _extract_file_message_ts(client, upload, "C1")
+        assert ts == "200.0"
+        client.files_info.assert_not_called()
+
     def test_prefers_share_matching_thread_ts(self):
         from helpers.files import _extract_file_message_ts
 

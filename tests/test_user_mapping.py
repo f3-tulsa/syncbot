@@ -113,23 +113,27 @@ class TestSeedWithoutPartnerCrawl:
             normalized_name="Ada",
             deleted_at=None,
         )
+        source_dir = SimpleNamespace(
+            workspace_id=1,
+            slack_user_id="U_SRC",
+            email="a@ex.com",
+            real_name="Ada",
+            display_name="Ada",
+            deleted_at=None,
+        )
 
         with (
             patch("helpers.user_map.DbManager.find_records") as find,
             patch("helpers.user_map.DbManager.update_records") as update,
-            patch("helpers.user_map._source_profile_from_directory") as profile,
+            patch("helpers.user_map._get_source_profile_full") as slack_lookup,
         ):
-            find.side_effect = [[mapping], [target_dir]]
-            profile.return_value = {
-                "email": "a@ex.com",
-                "real_name": "Ada",
-                "display_name": "Ada",
-            }
+            find.side_effect = [[mapping], [target_dir], [source_dir]]
             newly, still = run_auto_map_for_workspace(None, 2, seeded=1)
 
         assert newly == 1
         assert still == 0
         assert update.called
+        slack_lookup.assert_not_called()
 
     def test_auto_map_skips_source_slack_lookup_when_disallowed(self):
         mapping = SimpleNamespace(
@@ -141,11 +145,10 @@ class TestSeedWithoutPartnerCrawl:
         )
         with (
             patch("helpers.user_map.DbManager.find_records") as find,
-            patch("helpers.user_map._source_profile_from_directory", return_value=None),
             patch("helpers.user_map._get_source_profile_full") as slack_lookup,
             patch("helpers.user_map.get_workspace_by_id") as get_ws,
         ):
-            find.side_effect = [[mapping], []]
+            find.side_effect = [[mapping], [], []]
             newly, still = run_auto_map_for_workspace(MagicMock(), 2, allow_slack_email_lookup=False, seeded=0)
 
         assert newly == 0

@@ -287,12 +287,13 @@ def get_groups_for_workspace(workspace_id: int) -> list[schemas.WorkspaceGroup]:
             schemas.WorkspaceGroupMember.deleted_at.is_(None),
         ],
     )
-    groups: list[schemas.WorkspaceGroup] = []
-    for m in members:
-        g = DbManager.get_record(schemas.WorkspaceGroup, id=m.group_id)
-        if g and g.status == "active":
-            groups.append(g)
-    return groups
+    if not members:
+        return []
+    group_ids = [m.group_id for m in members]
+    return DbManager.find_records(
+        schemas.WorkspaceGroup,
+        [schemas.WorkspaceGroup.id.in_(group_ids), schemas.WorkspaceGroup.status == "active"],
+    )
 
 
 def get_group_members(group_id: int) -> list[schemas.WorkspaceGroupMember]:

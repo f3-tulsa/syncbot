@@ -161,66 +161,107 @@ def _broadcast_thread_file_share(client: WebClient, channel_id: str, message_ts:
         )
 
 
+def _share_ts_from_file_payload(
+    file_obj: dict | None,
+    channel_id: str,
+    thread_ts: str | None = None,
+) -> str | None:
+    """Return message ts from a file object's ``shares`` map when present."""
+    if not isinstance(file_obj, dict):
+        return None
+    shares = file_obj.get("shares") or {}
+    if not isinstance(shares, dict):
+        return None
+    for share_type in ("public", "private"):
+        channel_shares = (shares.get(share_type) or {}).get(channel_id, [])
+        if not channel_shares:
+            continue
+        if thread_ts:
+            for share in channel_shares:
+                if str(share.get("ts") or "") == str(thread_ts) or str(share.get("thread_ts") or "") == str(thread_ts):
+                    ts = share.get("ts")
+                    if ts:
+                        return str(ts)
+        ts = channel_shares[0].get("ts")
+        if ts:
+            return str(ts)
+    return None
+
+
+def _file_id_from_upload_response(upload_response) -> str | None:
+    """Best-effort file id from ``files_upload_v2`` response."""
+    if not upload_response:
+        return None
+    with contextlib.suppress(KeyError, TypeError, IndexError, AttributeError):
+        file_id = upload_response["file"]["id"]
+        if file_id:
+            return str(file_id)
+    with contextlib.suppress(KeyError, TypeError, IndexError, AttributeError):
+        # slack_sdk may expose data on .data
+        data = getattr(upload_response, "data", None) or upload_response
+        file_id = data["file"]["id"]
+        if file_id:
+            return str(file_id)
+    try:
+        data = getattr(upload_response, "data", None) or upload_response
+        files_list = data["files"]
+        if files_list and len(files_list) > 0:
+            first = files_list[0]
+            file_id = first["id"] if isinstance(first, dict) else first.get("id")
+            if file_id:
+                return str(file_id)
+    except (KeyError, TypeError, IndexError, AttributeError):
+        pass
+    return None
+
+
 def _extract_file_message_ts(
     client: WebClient,
     upload_response,
     channel_id: str,
     thread_ts: str | None = None,
 ) -> str | None:
-    """Extract the message ts created by a file upload."""
+    """Extract the message ts created by a file upload.
+
+    Prefer ``shares`` on the upload response. Poll ``files.info`` once only when
+    the upload payload has no share ts yet.
+    """
     if not upload_response:
         return None
 
-    file_id = None
-    with contextlib.suppress(KeyError, TypeError, IndexError):
-        file_id = upload_response["file"]["id"]
+    data = getattr(upload_response, "data", None) or upload_response
+    with contextlib.suppress(KeyError, TypeError, IndexError, AttributeError):
+        ts = _share_ts_from_file_payload(data.get("file"), channel_id, thread_ts=thread_ts)
+        if ts:
+            return ts
+    with contextlib.suppress(KeyError, TypeError, IndexError, AttributeError):
+        files_list = data.get("files") or []
+        if files_list:
+            first = files_list[0] if isinstance(files_list[0], dict) else None
+            ts = _share_ts_from_file_payload(first, channel_id, thread_ts=thread_ts)
+            if ts:
+                return ts
 
-    if not file_id:
-        try:
-            files_list = upload_response["files"]
-            if files_list and len(files_list) > 0:
-                file_id = files_list[0]["id"] if isinstance(files_list[0], dict) else files_list[0].get("id")
-        except (KeyError, TypeError, IndexError):
-            pass
-
+    file_id = _file_id_from_upload_response(upload_response)
     if not file_id:
         _logger.warning("_extract_file_message_ts: could not find file_id in upload response")
         return None
 
-    for attempt in range(4):
+    for attempt in range(2):
         try:
             info_resp = client.files_info(file=file_id)
-            shares = info_resp["file"]["shares"]
-            for share_type in ("public", "private"):
-                channel_shares = shares.get(share_type, {}).get(channel_id, [])
-                if not channel_shares:
-                    continue
-                if thread_ts:
-                    for share in channel_shares:
-                        if str(share.get("ts") or "") == str(thread_ts) or str(share.get("thread_ts") or "") == str(
-                            thread_ts
-                        ):
-                            ts = share.get("ts")
-                            if ts:
-                                _logger.info(
-                                    "_extract_file_message_ts: success",
-                                    extra={"file_id": file_id, "ts": ts, "attempt": attempt},
-                                )
-                                return ts
-                ts = channel_shares[0].get("ts")
-                if ts:
-                    _logger.info(
-                        "_extract_file_message_ts: success",
-                        extra={"file_id": file_id, "ts": ts, "attempt": attempt},
-                    )
-                    return ts
-        except (KeyError, TypeError, IndexError):
-            pass
+            ts = _share_ts_from_file_payload(info_resp.get("file"), channel_id, thread_ts=thread_ts)
+            if ts:
+                _logger.info(
+                    "_extract_file_message_ts: success",
+                    extra={"file_id": file_id, "ts": ts, "attempt": attempt},
+                )
+                return ts
         except Exception as e:
             _logger.warning(f"_extract_file_message_ts: files.info error (attempt {attempt}): {e}")
 
-        if attempt < 3:
-            _time.sleep(1.5)
+        if attempt == 0:
+            _time.sleep(0.5)
 
     _logger.warning(f"_extract_file_message_ts: could not resolve ts for file {file_id} after retries")
     return None

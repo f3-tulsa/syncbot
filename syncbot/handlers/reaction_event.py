@@ -79,14 +79,6 @@ def handle_reaction(
     if own_user_id and user_id == own_user_id:
         return
 
-    reacted_records = helpers.get_post_records(msg_ts)
-    if not reacted_records:
-        _logger.debug(
-            "reaction_no_post_meta",
-            extra={"msg_ts": msg_ts, "channel_id": channel_id, "float_ts": float(msg_ts)},
-        )
-        return
-
     team_id = helpers.get_team_id_from_body(body)
 
     def _sync_reaction() -> None:
@@ -97,6 +89,14 @@ def handle_reaction(
         if not helpers.channel_has_membership(channel_id):
             return
         if not helpers.origin_publishes_anywhere(channel_id):
+            return
+
+        reacted_records = helpers.get_post_records(msg_ts)
+        if not reacted_records:
+            _logger.debug(
+                "reaction_no_post_meta",
+                extra={"msg_ts": msg_ts, "channel_id": channel_id, "float_ts": float(msg_ts)},
+            )
             return
         _sync_reaction_records(body, client, reacted_records)
 

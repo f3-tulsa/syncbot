@@ -55,6 +55,7 @@ def pipeline_guards():
     with (
         patch("helpers.channel_has_membership", return_value=True),
         patch("helpers.origin_publishes_anywhere", return_value=True),
+        patch("helpers.iter_publish_targets", return_value=[object()]),
         patch("helpers.post_meta_exists_for_channel_ts", return_value=False),
         patch("helpers.take_user_action_echo", return_value=False),
     ):
@@ -236,7 +237,7 @@ class TestRespondToMessageEventDedup:
 
         with (
             patch("handlers.message._is_own_bot_message", return_value=False),
-            patch("handlers.message._parse_event_fields") as parse,
+            patch("handlers.message._parse_event_fields_light") as parse,
             patch("handlers.message._handle_message_edit") as mock_edit,
             patch("handlers.message._build_file_context", return_value=([], [])),
         ):
@@ -244,6 +245,13 @@ class TestRespondToMessageEventDedup:
                 "event_subtype": "message_changed",
                 "thread_ts": None,
                 "msg_text": "edited",
+                "channel_id": "C001",
+                "user_id": "U001",
+                "team_id": "T001",
+                "ts": "1234567890.000001",
+                "mentioned_users": [],
+                "content_blocks": [],
+                "reply_broadcast": False,
             }
             respond_to_message_event(body, client, logger, {})
             respond_to_message_event(body, client, logger, {})
@@ -259,7 +267,8 @@ class TestRespondToMessageEventDedup:
 
         with (
             patch("handlers.message._is_own_bot_message", return_value=False),
-            patch("handlers.message._parse_event_fields") as parse,
+            patch("handlers.message._parse_event_fields_light") as parse,
+            patch("handlers.message._try_handle_reaction_notice_delete", return_value=False),
             patch("handlers.message._handle_message_delete") as mock_delete,
             patch("handlers.message._build_file_context", return_value=([], [])),
         ):
@@ -267,6 +276,13 @@ class TestRespondToMessageEventDedup:
                 "event_subtype": "message_deleted",
                 "thread_ts": None,
                 "msg_text": "",
+                "channel_id": "C001",
+                "user_id": "U001",
+                "team_id": "T001",
+                "ts": "1234567890.000001",
+                "mentioned_users": [],
+                "content_blocks": [],
+                "reply_broadcast": False,
             }
             respond_to_message_event(body, client, logger, {})
             respond_to_message_event(body, client, logger, {})
@@ -281,7 +297,7 @@ class TestRespondToMessageEventDedup:
 
         with (
             patch("handlers.message._is_own_bot_message", return_value=False),
-            patch("handlers.message._parse_event_fields") as parse,
+            patch("handlers.message._parse_event_fields_light") as parse,
             patch("handlers.message._handle_thread_reply") as mock_reply,
             patch("handlers.message._build_file_context", return_value=([], [])),
         ):
@@ -289,11 +305,35 @@ class TestRespondToMessageEventDedup:
                 "event_subtype": None,
                 "thread_ts": "1234567890.000000",
                 "msg_text": "Hello",
+                "channel_id": "C001",
+                "user_id": "U001",
+                "team_id": "T001",
+                "ts": "1234567890.000001",
+                "mentioned_users": [],
+                "content_blocks": [],
+                "reply_broadcast": False,
             }
             respond_to_message_event(body, client, logger, {})
             respond_to_message_event(body, client, logger, {})
 
         mock_reply.assert_called_once()
+
+    def test_no_publish_targets_skips_enrich_and_still_creates_origin(self):
+        client = MagicMock()
+        logger = MagicMock()
+
+        with (
+            patch("handlers.message._is_own_bot_message", return_value=False),
+            patch("helpers.iter_publish_targets", return_value=[]),
+            patch("handlers.message._enrich_event_fields_for_sync") as enrich,
+            patch("handlers.message._handle_new_post") as mock_new,
+            patch("handlers.message._build_file_context") as build_fc,
+        ):
+            respond_to_message_event(_message_body(event_id=""), client, logger, {})
+
+        enrich.assert_not_called()
+        build_fc.assert_not_called()
+        mock_new.assert_called_once()
 
 
 class TestHandleReactionClaim:
@@ -309,22 +349,22 @@ class TestHandleReactionClaim:
             },
         }
 
-    def test_reaction_removed_is_noop_without_claim(self, event_db):
+    def test_reaction_removed_still_claims(self, event_db):
         body = self._reaction_body()
         body["event"]["type"] = "reaction_removed"
         with patch("handlers.reaction_event.run_claimed") as mock_run:
             handle_reaction(body, MagicMock(), MagicMock(), {})
-        mock_run.assert_not_called()
+        mock_run.assert_called_once()
 
-    def test_reaction_without_post_meta_does_not_claim(self, event_db):
+    def test_reaction_without_post_meta_still_claims(self, event_db):
         body = self._reaction_body()
         with (
             patch("handlers.reaction_event.helpers.get_own_bot_user_id", return_value="UBOT"),
             patch("handlers.reaction_event.helpers.get_post_records", return_value=[]),
-            patch("handlers.reaction_event.run_claimed") as mock_run,
+            patch("handlers.reaction_event._sync_reaction_records") as mock_sync,
         ):
             handle_reaction(body, MagicMock(), MagicMock(), {})
-        mock_run.assert_not_called()
+        mock_sync.assert_not_called()
 
     def test_reaction_added_claims_before_side_effects(self, event_db):
         body = self._reaction_body()

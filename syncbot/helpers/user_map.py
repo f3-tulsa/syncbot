@@ -625,6 +625,13 @@ def resolve_mention_for_workspace(
     target_workspace_id: int,
 ) -> str:
     """Resolve a single @mention from source workspace to target workspace."""
+    from helpers._cache import request_scope_get, request_scope_set
+
+    scope_key = f"mention_resolve:{source_workspace_id}:{source_user_id}:{target_workspace_id}"
+    cached = request_scope_get(scope_key)
+    if isinstance(cached, str):
+        return cached
+
     source_ws = get_workspace_by_id(source_workspace_id)
     source_ws_name = resolve_workspace_name(source_ws) if source_ws else None
 
@@ -634,12 +641,18 @@ def resolve_mention_for_workspace(
     mapping = _mapping_row_for_pair(source_user_id, source_workspace_id, target_workspace_id)
     if mapping and _is_mapping_fresh(mapping):
         if mapping.target_user_id:
-            return f"<@{mapping.target_user_id}>"
-        return _unmapped_label(mapping.source_display_name or source_user_id)
+            result = f"<@{mapping.target_user_id}>"
+            request_scope_set(scope_key, result)
+            return result
+        result = _unmapped_label(mapping.source_display_name or source_user_id)
+        request_scope_set(scope_key, result)
+        return result
 
     source_profile = _get_source_profile_full(source_client, source_user_id)
     if not source_profile:
-        return _unmapped_label(source_user_id)
+        result = _unmapped_label(source_user_id)
+        request_scope_set(scope_key, result)
+        return result
 
     target_uid, method = _get_user_map(source_user_id, source_profile, target_client, target_workspace_id)
     display = source_profile.get("display_name") or source_profile.get("real_name") or source_user_id
@@ -653,8 +666,11 @@ def resolve_mention_for_workspace(
         existing=mapping,
     )
     if target_uid:
-        return f"<@{target_uid}>"
-    return _unmapped_label(display)
+        result = f"<@{target_uid}>"
+    else:
+        result = _unmapped_label(display)
+    request_scope_set(scope_key, result)
+    return result
 
 
 _MAX_MENTIONS = 50
@@ -739,11 +755,14 @@ def _lookup_channel_name(
     inline_label: str | None = None,
 ) -> str:
     """Best-effort source channel name; *channel_id* when it cannot be resolved."""
+    if inline_label:
+        return inline_label
     if source_client:
         try:
-            info = source_client.conversations_info(channel=channel_id)
-            name = safe_get(info, "channel", "name")
-            if name:
+            from helpers.workspace import lookup_channel_meta
+
+            name, _is_private = lookup_channel_meta(channel_id, client=source_client)
+            if name and name != channel_id:
                 return name
         except Exception as exc:
             _logger.debug(
@@ -858,16 +877,13 @@ def seed_user_mappings(source_workspace_id: int, target_workspace_id: int, group
 
     now = datetime.now(UTC)
     to_create: list[schemas.UserMapping] = []
+    name_updates: list[tuple[int, str]] = []
     for entry in directory:
         current_name = entry.display_name or entry.real_name
         if entry.slack_user_id in existing_by_uid:
             mapping = existing_by_uid[entry.slack_user_id]
             if mapping.source_display_name != current_name:
-                DbManager.update_records(
-                    schemas.UserMapping,
-                    [schemas.UserMapping.id == mapping.id],
-                    {schemas.UserMapping.source_display_name: current_name},
-                )
+                name_updates.append((mapping.id, current_name))
             continue
         to_create.append(
             schemas.UserMapping(
@@ -880,6 +896,13 @@ def seed_user_mappings(source_workspace_id: int, target_workspace_id: int, group
                 mapped_at=now,
                 group_id=group_id,
             )
+        )
+
+    for mapping_id, current_name in name_updates:
+        DbManager.update_records(
+            schemas.UserMapping,
+            [schemas.UserMapping.id == mapping_id],
+            {schemas.UserMapping.source_display_name: current_name},
         )
 
     if to_create:
@@ -929,8 +952,27 @@ def run_auto_map_for_workspace(
     by_name = 0
     email_lookup_denied = [False]
 
+    source_ws_ids = {m.source_workspace_id for m in unmatched}
+    source_uids = {m.source_user_id for m in unmatched}
+    directory_by_key: dict[tuple[int, str], dict[str, Any]] = {}
+    if source_ws_ids and source_uids:
+        dir_rows = DbManager.find_records(
+            schemas.UserDirectory,
+            [
+                schemas.UserDirectory.workspace_id.in_(list(source_ws_ids)),
+                schemas.UserDirectory.slack_user_id.in_(list(source_uids)),
+                schemas.UserDirectory.deleted_at.is_(None),
+            ],
+        )
+        for entry in dir_rows:
+            directory_by_key[(entry.workspace_id, entry.slack_user_id)] = {
+                "display_name": entry.display_name or "",
+                "real_name": entry.real_name or "",
+                "email": entry.email,
+            }
+
     for mapping in unmatched:
-        source_profile = _source_profile_from_directory(mapping.source_workspace_id, mapping.source_user_id)
+        source_profile = directory_by_key.get((mapping.source_workspace_id, mapping.source_user_id))
         if not source_profile and allow_slack_email_lookup:
             # Slack users.info only when the caller allowed per-user lookups
             # (not Auto Map Now, which must stay directory-only).
