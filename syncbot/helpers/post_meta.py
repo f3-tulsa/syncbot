@@ -89,7 +89,7 @@ def post_meta_exists_for_channel_ts(channel_id: str, ts: str | float) -> bool:
     return bool(rows)
 
 
-def find_publishing_post_records(
+def get_publishing_post_records(
     post_records: list[tuple[schemas.PostMeta, schemas.SyncChannel, schemas.Workspace]],
     channel_id: str,
 ) -> list[tuple[schemas.PostMeta, schemas.SyncChannel, schemas.Workspace]]:
@@ -108,7 +108,7 @@ def find_publishing_post_records(
     return rows
 
 
-def target_post_meta_for(post_id: str, sync_channel: schemas.SyncChannel) -> schemas.PostMeta | None:
+def get_target_post_meta(post_id: str, sync_channel: schemas.SyncChannel) -> schemas.PostMeta | None:
     """The PostMeta copy of *post_id* on *sync_channel*, if any."""
     rows = DbManager.find_records(
         schemas.PostMeta,
@@ -120,7 +120,7 @@ def target_post_meta_for(post_id: str, sync_channel: schemas.SyncChannel) -> sch
     return rows[0] if rows else None
 
 
-def origin_post_meta_rows(
+def build_origin_post_meta_rows(
     memberships: list[tuple],
     channel_id: str,
     post_uuid: str,

@@ -36,10 +36,10 @@ class TestSplitMessagePostMeta:
 
         with (
             patch(
-                "handlers.message.helpers.find_channel_memberships",
+                "handlers.message.helpers.get_channel_memberships",
                 return_value=[(sc_source, ws_source), (sc_target, ws_target)],
             ),
-            patch("handlers.message.helpers.find_origin_sync_channel", return_value=sc_source),
+            patch("handlers.message.helpers.get_origin_sync_channel", return_value=sc_source),
             patch(
                 "handlers.message.helpers.run_sync_pipeline",
                 return_value=[
@@ -99,10 +99,10 @@ class TestSplitMessagePostMeta:
         with (
             patch("handlers.message.helpers.get_post_records", return_value=post_records),
             patch(
-                "handlers.message.helpers.find_channel_memberships",
+                "handlers.message.helpers.get_channel_memberships",
                 return_value=[(sc_source, ws_source)],
             ),
-            patch("handlers.message.helpers.find_origin_sync_channel", return_value=sc_source),
+            patch("handlers.message.helpers.get_origin_sync_channel", return_value=sc_source),
             patch(
                 "handlers.message.helpers.run_sync_pipeline",
                 return_value=[
@@ -163,10 +163,10 @@ class TestFileOnlyThreadPostMeta:
         with (
             patch("handlers.message.helpers.get_post_records", return_value=post_records),
             patch(
-                "handlers.message.helpers.find_channel_memberships",
+                "handlers.message.helpers.get_channel_memberships",
                 return_value=[(sc_source, ws_source)],
             ),
-            patch("handlers.message.helpers.find_origin_sync_channel", return_value=sc_source),
+            patch("handlers.message.helpers.get_origin_sync_channel", return_value=sc_source),
             patch(
                 "handlers.message.helpers.run_sync_pipeline",
                 return_value=[SimpleNamespace(post_id="child", sync_channel_id=22, ts=350.0)],

@@ -69,7 +69,7 @@ from handlers.message import (
     _parse_event_fields,
     respond_to_message_event,
 )
-from handlers.reaction_event import _handle_reaction
+from handlers.reaction_event import handle_reaction
 from handlers.settings import handle_open_settings, handle_settings_submit
 from handlers.sync import (
     handle_app_home_opened,
@@ -92,7 +92,7 @@ from handlers.users import (
 __all__ = [
     "EventContext",
     "_get_authorized_workspace",
-    "_handle_reaction",
+    "handle_reaction",
     "_is_own_bot_message",
     "_parse_event_fields",
     "_parse_private_metadata",

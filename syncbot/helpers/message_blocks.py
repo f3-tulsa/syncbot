@@ -67,7 +67,7 @@ _INTERACTIVE_ACCESSORY = frozenset(
 _BODY_BLOCK_TYPES = frozenset({"section", "header", "rich_text", "context", "markdown"})
 
 
-def event_layout_blocks(event: dict) -> list[dict]:
+def get_event_layout_blocks(event: dict) -> list[dict]:
     """Return Block Kit from a message event, including ``message_changed``."""
     if not event:
         return []
@@ -81,7 +81,7 @@ def blocks_include_body(blocks: list[dict] | None) -> bool:
     return any(isinstance(b, dict) and b.get("type") in _BODY_BLOCK_TYPES for b in blocks or [])
 
 
-def content_blocks_for_sync(blocks: list[dict] | None) -> list[dict]:
+def build_content_blocks_for_sync(blocks: list[dict] | None) -> list[dict]:
     """Copy layout blocks that can be re-posted; drop interactivity and private files."""
     out: list[dict] = []
     for raw in blocks or []:

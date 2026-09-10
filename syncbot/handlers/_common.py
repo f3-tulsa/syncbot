@@ -142,16 +142,6 @@ def _ensure_membership_or_rollback(
     return False
 
 
-def _extract_team_id(body: dict) -> str | None:
-    """Return a workspace/team ID from common Slack payload locations."""
-    return (
-        helpers.safe_get(body, "view", "team_id")
-        or helpers.safe_get(body, "team", "id")
-        or helpers.safe_get(body, "team_id")
-        or helpers.safe_get(body, "user", "team_id")
-    )
-
-
 def _get_authorized_workspace(
     body: dict, client, context: dict, action_name: str
 ) -> tuple[str, schemas.Workspace] | None:
@@ -161,7 +151,7 @@ def _get_authorized_workspace(
     the workspace cannot be resolved.
     """
     user_id = helpers.get_user_id_from_body(body)
-    team_id = _extract_team_id(body)
+    team_id = helpers.get_team_id_from_body(body)
     if not user_id or not team_id or not helpers.is_workspace_manager(client, user_id, team_id):
         _logger.warning("authorization_denied", extra={"user_id": user_id, "action": action_name})
         return None

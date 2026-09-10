@@ -255,33 +255,3 @@ class TestJoinSyncIsRoutedForDeferredAck:
         import routing
 
         assert routing.VIEW_ACK_MAPPER[actions.CONFIG_JOIN_SYNC_SUBMIT] is (handlers.handle_join_sync_submit_ack)
-
-
-class TestCreateJoinFormsRespectPolicy:
-    """Create Sync / Join Sync modals share the conversations picker policy."""
-
-    def test_deep_copied_form_can_be_switched_to_public_only(self):
-        import copy
-
-        from slack import forms
-
-        form = copy.deepcopy(forms.CREATE_SYNC_FORM)
-        form.set_conversations_include_private(False)
-        rendered = form.as_form_field()
-
-        pickers = [b["element"] for b in rendered if b.get("element", {}).get("type") == "conversations_select"]
-        assert pickers
-        assert all(p["filter"]["include"] == ["public"] for p in pickers)
-
-    def test_deep_copied_form_can_include_private(self):
-        import copy
-
-        from slack import forms
-
-        form = copy.deepcopy(forms.JOIN_SYNC_FORM)
-        form.set_conversations_include_private(True)
-        rendered = form.as_form_field()
-
-        pickers = [b["element"] for b in rendered if b.get("element", {}).get("type") == "conversations_select"]
-        assert pickers
-        assert all("private" in p["filter"]["include"] for p in pickers)

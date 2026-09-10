@@ -18,7 +18,7 @@ _logger = logging.getLogger(__name__)
 _slack_error_code = slack_error_code
 
 
-def actor_key_for_notice(
+def build_actor_key_for_notice(
     source_workspace_id: int | None,
     *,
     federated_instance_id: str | None = None,
@@ -30,7 +30,7 @@ def actor_key_for_notice(
     return "fed:unknown"
 
 
-def reaction_notice_post_id(
+def build_reaction_notice_post_id(
     *,
     parent_post_id: str,
     reaction: str,
@@ -39,7 +39,7 @@ def reaction_notice_post_id(
     federated_instance_id: str | None = None,
 ) -> str:
     """Shared ``post_id`` for every target copy of the same logical Hybrid reaction."""
-    actor_key = actor_key_for_notice(source_workspace_id, federated_instance_id=federated_instance_id)
+    actor_key = build_actor_key_for_notice(source_workspace_id, federated_instance_id=federated_instance_id)
     payload = f"{parent_post_id}\0{reaction}\0{actor_key}\0{source_user_id}"
     digest = hashlib.sha256(payload.encode()).hexdigest()[:32]
     return f"rxn-{digest}"
@@ -123,7 +123,7 @@ def _delete_notice_subtree(
     _hard_delete_post_meta_rows([notice])
 
 
-def find_notices_for_unreact(
+def get_notices_for_unreact(
     *,
     parent_post_id: str,
     reaction: str,
@@ -165,7 +165,7 @@ def delete_notices_for_unreact(
 ) -> None:
     """Delete matching Hybrid notices on one target channel (children first)."""
     actor_pairs = equivalent_actor_pairs(event_workspace_id, event_user_id)
-    notices = find_notices_for_unreact(
+    notices = get_notices_for_unreact(
         parent_post_id=parent_post_id,
         reaction=reaction,
         sync_channel_id=sync_channel.id,
@@ -251,7 +251,7 @@ def _delete_leftover_thread_notices(
         chat_delete_notice(client, channel_id, ts)
 
 
-def find_post_meta_by_channel_ts(sync_channel_id: int, msg_ts: str | float) -> schemas.PostMeta | None:
+def get_post_meta_by_channel_ts(sync_channel_id: int, msg_ts: str | float) -> schemas.PostMeta | None:
     rows = DbManager.find_records(
         schemas.PostMeta,
         [

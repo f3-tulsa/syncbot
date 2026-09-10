@@ -18,7 +18,7 @@ from handlers._common import (
     _get_text_input_value,
     _parse_private_metadata,
 )
-from slack import actions, forms, orm
+from slack import actions, orm
 from slack.blocks import context as block_context
 from slack.blocks import divider, section
 
@@ -75,11 +75,7 @@ def handle_create_group(
 ) -> None:
     """Open a modal for naming a new workspace group."""
     user_id = helpers.get_user_id_from_body(body)
-    team_id = (
-        helpers.safe_get(body, "team", "id")
-        or helpers.safe_get(body, "view", "team_id")
-        or helpers.safe_get(body, "team_id")
-    )
+    team_id = helpers.get_team_id_from_body(body)
     if not user_id or not team_id or not helpers.is_workspace_manager(client, user_id, team_id):
         _logger.warning("authorization_denied", extra={"user_id": user_id, "action": "create_group"})
         return
@@ -165,7 +161,7 @@ def handle_create_group_submit(
         },
     )
 
-    acting_user_id = helpers.safe_get(body, "user", "id") or user_id
+    acting_user_id = user_id
     if acting_user_id:
         try:
             dm = client.conversations_open(users=[acting_user_id])
@@ -189,21 +185,32 @@ def handle_join_group(
     context: dict,
 ) -> None:
     """Open a modal for entering a group invite code."""
-    import copy
-
     user_id = helpers.get_user_id_from_body(body)
-    team_id = (
-        helpers.safe_get(body, "team", "id")
-        or helpers.safe_get(body, "view", "team_id")
-        or helpers.safe_get(body, "team_id")
-    )
+    team_id = helpers.get_team_id_from_body(body)
     if not user_id or not team_id or not helpers.is_workspace_manager(client, user_id, team_id):
         _logger.warning("authorization_denied", extra={"user_id": user_id, "action": "join_group"})
         return
 
     trigger_id = helpers.safe_get(body, "trigger_id")
-    enter_form = copy.deepcopy(forms.ENTER_GROUP_CODE_FORM)
-    enter_form.post_modal(
+    if not trigger_id:
+        return
+
+    view = orm.BlockView(
+        blocks=[
+            orm.InputBlock(
+                label="Group Invite Code",
+                action=actions.CONFIG_JOIN_GROUP_CODE,
+                element=orm.PlainTextInputElement(placeholder="Enter the code (e.g. A7X-K9M)"),
+                optional=False,
+            ),
+            orm.ContextBlock(
+                element=orm.ContextElement(
+                    initial_value="Enter the invite code shared by an Admin from another Workspace in the Group.",
+                ),
+            ),
+        ]
+    )
+    view.post_modal(
         client=client,
         trigger_id=trigger_id,
         callback_id=actions.CONFIG_JOIN_GROUP_SUBMIT,
@@ -225,13 +232,12 @@ def handle_join_group_submit(
         return
     user_id, workspace_record = auth_result
 
-    form_data = forms.ENTER_GROUP_CODE_FORM.get_selected_values(body)
-    raw_code = (helpers.safe_get(form_data, actions.CONFIG_JOIN_GROUP_CODE) or "").strip().upper()
+    raw_code = (_get_text_input_value(body, actions.CONFIG_JOIN_GROUP_CODE) or "").strip().upper()
 
     if "-" not in raw_code and len(raw_code) >= 6:
         raw_code = f"{raw_code[:3]}-{raw_code[3:]}"
 
-    acting_user_id = helpers.safe_get(body, "user", "id") or user_id
+    acting_user_id = user_id
 
     rate_key = f"group_join_attempts:{workspace_record.id}"
     attempts = helpers._cache_get(rate_key) or 0
@@ -508,7 +514,7 @@ def handle_invite_workspace_submit(
         builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
         return
 
-    acting_user_id = helpers.safe_get(body, "user", "id") or user_id
+    acting_user_id = user_id
     member = schemas.WorkspaceGroupMember(
         group_id=group_id,
         workspace_id=target_ws_id,
@@ -539,14 +545,14 @@ def handle_invite_workspace_submit(
                     "type": "button",
                     "text": {"type": "plain_text", "text": "Accept"},
                     "style": "primary",
-                    "action_id": f"{actions.CONFIG_ACCEPT_GROUP_REQUEST}_{member.id}",
+                    "action_id": f"{actions.CONFIG_ACCEPT_GROUP_INVITE}_{member.id}",
                     "value": str(member.id),
                 },
                 {
                     "type": "button",
                     "text": {"type": "plain_text", "text": "Decline"},
                     "style": "danger",
-                    "action_id": f"{actions.CONFIG_DECLINE_GROUP_REQUEST}_{member.id}",
+                    "action_id": f"{actions.CONFIG_DECLINE_GROUP_INVITE}_{member.id}",
                     "value": str(member.id),
                 },
             ],
@@ -707,9 +713,9 @@ def handle_decline_group_invite(
         return
 
     action_id = helpers.safe_get(body, "actions", 0, "action_id") or ""
-    is_cancel = action_id.startswith(actions.CONFIG_CANCEL_GROUP_REQUEST)
+    is_cancel = action_id.startswith(actions.CONFIG_CANCEL_GROUP_INVITE)
     outcome = "canceled" if is_cancel else "declined"
-    action_name = "cancel_group_request" if is_cancel else "decline_group_invite"
+    action_name = "cancel_group_invite" if is_cancel else "decline_group_invite"
 
     auth_result = _get_authorized_workspace(body, client, context, action_name)
     if not auth_result:

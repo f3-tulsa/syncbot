@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- version list -->
 
+## [Unreleased]
+
+### Changed
+
+- Code refactor; remove dead code, use verb prefixes for helpers, lockstep group invite Slack IDs
+
 
 ## [1.6.1] - 2026-09-10
 

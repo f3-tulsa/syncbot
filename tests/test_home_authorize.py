@@ -294,14 +294,12 @@ class TestHomeRefreshTargets:
             patch("builders.home.build_home_tab") as build,
             patch("builders.home.helpers.decrypt_bot_token", return_value="xoxb"),
             patch("builders.home.WebClient"),
-            patch("builders.home.helpers.get_admin_ids") as get_admins,
         ):
             refresh_home_tab_for_workspace(workspace, logger, context={}, user_id="U1")
 
         invalidate.assert_called_once_with("T1")
         build.assert_called_once()
         assert build.call_args.kwargs.get("user_id") == "U1"
-        get_admins.assert_not_called()
 
     def test_refresh_without_user_id_invalidates_only(self):
         from builders.home import refresh_home_tab_for_workspace
@@ -310,13 +308,11 @@ class TestHomeRefreshTargets:
         with (
             patch("helpers.export_import.invalidate_home_tab_caches_for_team") as invalidate,
             patch("builders.home.build_home_tab") as build,
-            patch("builders.home.helpers.get_admin_ids") as get_admins,
         ):
             refresh_home_tab_for_workspace(workspace, MagicMock(), context={}, user_id=None)
 
         invalidate.assert_called_once_with("T1")
         build.assert_not_called()
-        get_admins.assert_not_called()
 
 
 class TestContentHashIsPerUser:

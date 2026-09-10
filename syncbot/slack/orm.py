@@ -590,9 +590,8 @@ class BlockView:
     def set_conversations_include_private(self, include_private: bool):
         """Apply the private-channel policy to every conversations picker in this view.
 
-        The form templates in :mod:`slack.forms` are module-level constants, so the
-        policy cannot be baked into them at import time — it would go stale as soon
-        as an operator changed the setting. Call this on the deep copy instead.
+        Call this at render time from ``allow_private_channels(team_id)``. The
+        filter is advisory; callers still validate the selected channel on submit.
         """
         for block in self.blocks:
             element = getattr(block, "element", None)

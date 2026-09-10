@@ -13,7 +13,7 @@ from db import DbManager, schemas
 from helpers.conversations import get_user_token
 from helpers.core import safe_get
 from helpers.encryption import decrypt_bot_token
-from helpers.reaction_notice import delete_notices_for_unreact, reaction_notice_post_id
+from helpers.reaction_notice import build_reaction_notice_post_id, delete_notices_for_unreact
 from helpers.slack_api import slack_error_code
 from helpers.sync_participation import channel_subscribes
 from helpers.user_action_echo import reaction_echo_fingerprint, remember_user_action, slack_message_ts
@@ -24,7 +24,7 @@ ApplyResult = Literal["direct", "thread", "skipped", "failed"]
 _slack_error_code = slack_error_code
 
 
-def reaction_style(sync_channel: schemas.SyncChannel | None) -> str | None:
+def get_reaction_style(sync_channel: schemas.SyncChannel | None) -> str | None:
     raw = getattr(sync_channel, "reaction_style", None)
     if raw is None or str(raw).strip() == "":
         if channel_subscribes(sync_channel):
@@ -130,7 +130,7 @@ def _post_threaded_reaction_notice(
         return None
 
     parent_post_id = str(getattr(post_meta, "post_id", None) or "")
-    notice_post_id = reaction_notice_post_id(
+    notice_post_id = build_reaction_notice_post_id(
         parent_post_id=parent_post_id,
         reaction=reaction,
         source_user_id=source_user_id,
@@ -224,13 +224,83 @@ def _remember_native_reaction(
     )
 
 
-def apply_reaction_to_target(
+def _apply_direct_reaction(
+    *,
+    action: str,
+    reaction: str,
+    source_user_id: str | None,
+    target_sync_channel: schemas.SyncChannel,
+    target_workspace: schemas.Workspace,
+    channel_id: str,
+    target_ts: str,
+    parent_post_id: str,
+    resolved_user: str | None,
+    user_token: str,
+    target_bot_client,
+    event_workspace_id: int | None,
+) -> tuple[ApplyResult, schemas.PostMeta | None] | None:
+    """User-token Direct add/remove. Return a result, or ``None`` to try Hybrid."""
+    user_client = WebClient(token=user_token)
+    try:
+        if action == "add":
+            user_client.reactions_add(channel=channel_id, timestamp=target_ts, name=reaction)
+        else:
+            user_client.reactions_remove(channel=channel_id, timestamp=target_ts, name=reaction)
+        _remember_native_reaction(
+            team_id=target_workspace.team_id,
+            user_id=resolved_user,
+            action=action,
+            channel_id=channel_id,
+            target_ts=target_ts,
+            reaction=reaction,
+        )
+        if action == "remove":
+            ws_id = event_workspace_id if event_workspace_id is not None else target_workspace.id
+            actor_user = source_user_id or resolved_user
+            if actor_user:
+                delete_notices_for_unreact(
+                    parent_post_id=parent_post_id,
+                    reaction=reaction,
+                    sync_channel=target_sync_channel,
+                    event_workspace_id=ws_id,
+                    event_user_id=actor_user,
+                    client=user_client,
+                )
+        return "direct", None
+    except SlackApiError as exc:
+        error_code = _slack_error_code(exc)
+        if action == "remove":
+            ws_id = event_workspace_id if event_workspace_id is not None else target_workspace.id
+            actor_user = source_user_id or resolved_user
+            if actor_user:
+                delete_notices_for_unreact(
+                    parent_post_id=parent_post_id,
+                    reaction=reaction,
+                    sync_channel=target_sync_channel,
+                    event_workspace_id=ws_id,
+                    event_user_id=actor_user,
+                    client=target_bot_client(),
+                )
+            return "skipped", None
+        if error_code in _IDEMPOTENT_ADD_ERRORS:
+            return "direct", None
+        if error_code == "invalid_name":
+            return "skipped", None
+        if error_code in _NO_AUTHORIZE_ERRORS:
+            return None
+        _logger.warning(
+            "reaction_direct_failed",
+            extra={"channel_id": channel_id, "error": error_code or str(exc)},
+        )
+        return "failed", None
+
+
+def _apply_hybrid_reaction(
     *,
     action: str,
     reaction: str,
     source_user_id: str | None,
     source_workspace_id: int | None,
-    source_sync_channel: schemas.SyncChannel | None,
     target_post_meta: schemas.PostMeta,
     target_sync_channel: schemas.SyncChannel,
     target_workspace: schemas.Workspace,
@@ -238,108 +308,16 @@ def apply_reaction_to_target(
     icon_url: str | None,
     posted_from: str,
     author_is_mapped: bool,
-    mapped_user_id: str | None = None,
-    name_probe_cache: dict[tuple[str, str], bool] | None = None,
-    federated_instance_id: str | None = None,
-    event_workspace_id: int | None = None,
+    parent_post_id: str,
+    channel_id: str,
+    target_ts: str,
+    target_bot_client,
+    name_probe_cache: dict[tuple[str, str], bool] | None,
+    federated_instance_id: str | None,
+    event_workspace_id: int | None,
+    style: str | None,
 ) -> tuple[ApplyResult, schemas.PostMeta | None]:
-    """Apply a reaction add/remove on a target channel. Never writes to the origin.
-
-    User-token add/remove runs first when the target has an ``xoxp``. Bot name
-    probe (`_target_reaction_name_is_invalid`) runs only on the Hybrid thread
-    path: no target token, or that token hit ``_NO_AUTHORIZE_ERRORS``. Skip the
-    probe only when source and target are the same Slack workspace. Federation inbound and
-    same-instance cross-workspace still probe — origin having the emoji does not
-    mean the target has it. Direct-only never probes. Off does not apply add or remove.
-    ``invalid_name`` always skips; it never becomes a thread notice.
-    """
-    if source_sync_channel is not None and source_sync_channel.channel_id == target_sync_channel.channel_id:
-        return "skipped", None
-
-    if not channel_subscribes(target_sync_channel):
-        return "skipped", None
-
-    style = reaction_style(target_sync_channel)
-    if style == constants.REACTION_STYLE_OFF:
-        return "skipped", None
-
-    target_ts = slack_message_ts(target_post_meta.ts)
-    channel_id = target_sync_channel.channel_id
-    parent_post_id = str(getattr(target_post_meta, "post_id", None) or "")
-    bot_client: WebClient | None = None
-
-    def target_bot_client() -> WebClient:
-        nonlocal bot_client
-        if bot_client is None:
-            bot_client = WebClient(token=decrypt_bot_token(target_workspace.bot_token))
-        return bot_client
-
-    resolved_user = mapped_user_id or _mapped_user_for_target(
-        source_user_id,
-        source_workspace_id,
-        target_workspace.id,
-        target_workspace=target_workspace,
-    )
-    if resolved_user:
-        author_is_mapped = True
-    user_token = get_user_token(target_workspace.team_id, resolved_user)
-
-    if user_token and style in (constants.REACTION_STYLE_DIRECT_ONLY, constants.REACTION_STYLE_THREADED_AND_DIRECT):
-        user_client = WebClient(token=user_token)
-        try:
-            if action == "add":
-                user_client.reactions_add(channel=channel_id, timestamp=target_ts, name=reaction)
-            else:
-                user_client.reactions_remove(channel=channel_id, timestamp=target_ts, name=reaction)
-            _remember_native_reaction(
-                team_id=target_workspace.team_id,
-                user_id=resolved_user,
-                action=action,
-                channel_id=channel_id,
-                target_ts=target_ts,
-                reaction=reaction,
-            )
-            if action == "remove":
-                ws_id = event_workspace_id if event_workspace_id is not None else target_workspace.id
-                actor_user = source_user_id or resolved_user
-                if actor_user:
-                    delete_notices_for_unreact(
-                        parent_post_id=parent_post_id,
-                        reaction=reaction,
-                        sync_channel=target_sync_channel,
-                        event_workspace_id=ws_id,
-                        event_user_id=actor_user,
-                        client=user_client,
-                    )
-            return "direct", None
-        except SlackApiError as exc:
-            error_code = _slack_error_code(exc)
-            if action == "remove":
-                ws_id = event_workspace_id if event_workspace_id is not None else target_workspace.id
-                actor_user = source_user_id or resolved_user
-                if actor_user:
-                    delete_notices_for_unreact(
-                        parent_post_id=parent_post_id,
-                        reaction=reaction,
-                        sync_channel=target_sync_channel,
-                        event_workspace_id=ws_id,
-                        event_user_id=actor_user,
-                        client=target_bot_client(),
-                    )
-                return "skipped", None
-            if error_code in _IDEMPOTENT_ADD_ERRORS:
-                return "direct", None
-            if error_code == "invalid_name":
-                return "skipped", None
-            if error_code in _NO_AUTHORIZE_ERRORS:
-                user_token = None
-            else:
-                _logger.warning(
-                    "reaction_direct_failed",
-                    extra={"channel_id": channel_id, "error": error_code or str(exc)},
-                )
-                return "failed", None
-
+    """Hybrid thread notice (add) or unreact notice cleanup (remove)."""
     if action != "add":
         ws_id = event_workspace_id if event_workspace_id is not None else (source_workspace_id or target_workspace.id)
         actor_user = source_user_id
@@ -388,14 +366,105 @@ def apply_reaction_to_target(
     return ("thread", notice) if notice else ("failed", None)
 
 
-def find_source_sync_channel(
-    records: list[tuple[schemas.PostMeta, schemas.SyncChannel, schemas.Workspace]],
-    event_channel_id: str,
-) -> schemas.SyncChannel | None:
-    for _pm, sync_channel, _ws in records:
-        if sync_channel.channel_id == event_channel_id:
-            return sync_channel
-    return None
+def apply_reaction_to_target(
+    *,
+    action: str,
+    reaction: str,
+    source_user_id: str | None,
+    source_workspace_id: int | None,
+    source_sync_channel: schemas.SyncChannel | None,
+    target_post_meta: schemas.PostMeta,
+    target_sync_channel: schemas.SyncChannel,
+    target_workspace: schemas.Workspace,
+    display_name: str,
+    icon_url: str | None,
+    posted_from: str,
+    author_is_mapped: bool,
+    mapped_user_id: str | None = None,
+    name_probe_cache: dict[tuple[str, str], bool] | None = None,
+    federated_instance_id: str | None = None,
+    event_workspace_id: int | None = None,
+) -> tuple[ApplyResult, schemas.PostMeta | None]:
+    """Apply a reaction add/remove on a target channel. Never writes to the origin.
+
+    User-token add/remove runs first when the target has an ``xoxp``. Bot name
+    probe (`_target_reaction_name_is_invalid`) runs only on the Hybrid thread
+    path: no target token, or that token hit ``_NO_AUTHORIZE_ERRORS``. Skip the
+    probe only when source and target are the same Slack workspace. Federation inbound and
+    same-instance cross-workspace still probe — origin having the emoji does not
+    mean the target has it. Direct-only never probes. Off does not apply add or remove.
+    ``invalid_name`` always skips; it never becomes a thread notice.
+    """
+    if source_sync_channel is not None and source_sync_channel.channel_id == target_sync_channel.channel_id:
+        return "skipped", None
+
+    if not channel_subscribes(target_sync_channel):
+        return "skipped", None
+
+    style = get_reaction_style(target_sync_channel)
+    if style == constants.REACTION_STYLE_OFF:
+        return "skipped", None
+
+    target_ts = slack_message_ts(target_post_meta.ts)
+    channel_id = target_sync_channel.channel_id
+    parent_post_id = str(getattr(target_post_meta, "post_id", None) or "")
+    bot_client: WebClient | None = None
+
+    def target_bot_client() -> WebClient:
+        nonlocal bot_client
+        if bot_client is None:
+            bot_client = WebClient(token=decrypt_bot_token(target_workspace.bot_token))
+        return bot_client
+
+    resolved_user = mapped_user_id or _mapped_user_for_target(
+        source_user_id,
+        source_workspace_id,
+        target_workspace.id,
+        target_workspace=target_workspace,
+    )
+    if resolved_user:
+        author_is_mapped = True
+    user_token = get_user_token(target_workspace.team_id, resolved_user)
+
+    if user_token and style in (constants.REACTION_STYLE_DIRECT_ONLY, constants.REACTION_STYLE_THREADED_AND_DIRECT):
+        direct = _apply_direct_reaction(
+            action=action,
+            reaction=reaction,
+            source_user_id=source_user_id,
+            target_sync_channel=target_sync_channel,
+            target_workspace=target_workspace,
+            channel_id=channel_id,
+            target_ts=target_ts,
+            parent_post_id=parent_post_id,
+            resolved_user=resolved_user,
+            user_token=user_token,
+            target_bot_client=target_bot_client,
+            event_workspace_id=event_workspace_id,
+        )
+        if direct is not None:
+            return direct
+
+    return _apply_hybrid_reaction(
+        action=action,
+        reaction=reaction,
+        source_user_id=source_user_id,
+        source_workspace_id=source_workspace_id,
+        target_post_meta=target_post_meta,
+        target_sync_channel=target_sync_channel,
+        target_workspace=target_workspace,
+        display_name=display_name,
+        icon_url=icon_url,
+        posted_from=posted_from,
+        author_is_mapped=author_is_mapped,
+        parent_post_id=parent_post_id,
+        channel_id=channel_id,
+        target_ts=target_ts,
+        target_bot_client=target_bot_client,
+        name_probe_cache=name_probe_cache,
+        federated_instance_id=federated_instance_id,
+        event_workspace_id=event_workspace_id,
+        style=style,
+    )
 
 
 def update_sync_channel_reactions(

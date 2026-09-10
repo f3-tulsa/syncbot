@@ -8,7 +8,7 @@ from typing import Any
 from slack_sdk import WebClient
 
 from db import schemas
-from helpers.envelope import post_id_for_post_records
+from helpers.envelope import get_post_id_for_post_records
 from helpers.post_meta import get_post_records_for_post_id
 from helpers.sync_apply import apply_target
 from helpers.sync_participation import iter_publish_targets
@@ -35,7 +35,7 @@ def run_sync_pipeline(
     """
     del origin_ts  # Callers still pass origin_ts; PostMeta identity is on the envelope.
     targets = iter_publish_targets(source_channel_id)
-    records_post_id = post_id_for_post_records(envelope)
+    records_post_id = get_post_id_for_post_records(envelope)
     post_records = get_post_records_for_post_id(records_post_id) if records_post_id else []
     post_records_by_channel = {sync_channel.channel_id: pm for pm, sync_channel, _ws in post_records}
     parent_ts_by_channel = thread_parent_ts_by_channel or {

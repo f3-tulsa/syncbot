@@ -53,7 +53,13 @@ from constants import (
 )
 from db import initialize_database
 from federation.api import dispatch_federation_request
-from helpers import capture_public_base, federation_enabled, get_oauth_flow, get_request_type, safe_get
+from helpers import (
+    capture_public_base,
+    federation_enabled,
+    get_oauth_flow,
+    get_request_type,
+    get_team_id_from_body,
+)
 from helpers.oauth import capture_public_base_from_lambda_event
 from logger import (
     configure_logging,
@@ -106,20 +112,6 @@ app = App(
     token_verification_enabled=not LOCAL_DEVELOPMENT or HAS_REAL_BOT_TOKEN,
     oauth_flow=get_oauth_flow(),
 )
-
-
-@app.middleware
-def _capture_slack_retry_num(req, resp, next):
-    """Expose ``X-Slack-Retry-Num`` on context (handlers dedup by ``event_id``, not retry num)."""
-    headers = getattr(req, "headers", None) or {}
-    vals = headers.get("x-slack-retry-num")
-    if vals:
-        try:
-            v = vals[0] if isinstance(vals, list | tuple) else vals
-            req.context["slack_retry_num"] = int(v)
-        except (ValueError, TypeError, IndexError):
-            pass
-    return next()
 
 
 @app.middleware
@@ -266,7 +258,7 @@ def view_ack(body: dict, logger, client, ack, context: dict) -> None:
         extra={
             "request_type": request_type,
             "request_id": request_id,
-            "team_id": safe_get(body, "team_id"),
+            "team_id": get_team_id_from_body(body),
             "phase": "view_ack",
         },
     )
@@ -331,7 +323,7 @@ def main_response(body: dict, logger, client, ack, context: dict) -> None:
         extra={
             "request_type": request_type,
             "request_id": request_id,
-            "team_id": safe_get(body, "team_id"),
+            "team_id": get_team_id_from_body(body),
         },
     )
     _logger.debug("request_body", extra={"body": json.dumps(_redact_sensitive(body))})

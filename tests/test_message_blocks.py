@@ -5,8 +5,8 @@ from unittest.mock import MagicMock, patch
 
 from handlers.message import _parse_event_fields
 from helpers.message_blocks import (
+    build_content_blocks_for_sync,
     choose_message_text,
-    content_blocks_for_sync,
     text_from_blocks,
 )
 from helpers.slack_api import post_message
@@ -47,7 +47,7 @@ class TestChooseMessageText:
         fallback = (
             "Preblast: The QT Quest Date: 2026-09-19 Time: 05:30 Where: #csaup Q: @Loboto Coupons: gift cards maybe"
         )
-        blocks = content_blocks_for_sync(_preblast_blocks())
+        blocks = build_content_blocks_for_sync(_preblast_blocks())
         chosen = choose_message_text(fallback, blocks)
         assert "\n" in chosen
         assert "🚨" in chosen
@@ -60,13 +60,13 @@ class TestChooseMessageText:
 
 class TestContentBlocksForSync:
     def test_drops_actions_and_block_ids(self):
-        blocks = content_blocks_for_sync(_preblast_blocks())
+        blocks = build_content_blocks_for_sync(_preblast_blocks())
         assert all(b.get("type") != "actions" for b in blocks)
         assert all("block_id" not in b for b in blocks)
         assert len(blocks) == 2
 
     def test_skips_image_blocks_without_public_url(self):
-        blocks = content_blocks_for_sync([{"type": "image", "slack_file": {"id": "F123"}, "alt_text": "private"}])
+        blocks = build_content_blocks_for_sync([{"type": "image", "slack_file": {"id": "F123"}, "alt_text": "private"}])
         assert blocks == []
 
 
@@ -182,18 +182,18 @@ class TestHandleMessageEditForwardsLayoutBlocks:
 
         ctx = make_event_context(
             channel_id="C_SRC",
-            msg_text=text_from_blocks(content_blocks_for_sync(_preblast_blocks())),
+            msg_text=text_from_blocks(build_content_blocks_for_sync(_preblast_blocks())),
             mentioned_users=[{"user_id": "U_SRC", "user_name": "Loboto"}],
             ts="1.0",
             user_id=None,
-            content_blocks=content_blocks_for_sync(_preblast_blocks()),
+            content_blocks=build_content_blocks_for_sync(_preblast_blocks()),
         )
         post_meta = SimpleNamespace(post_id="p1", ts=1.0, sync_channel_id=1)
         sync_channel = SimpleNamespace(channel_id="C_SRC", id=1, sync_id=1)
         workspace = SimpleNamespace(id=1, team_id="T1", bot_token="enc")
         with (
             patch("handlers.message.helpers.get_post_records", return_value=[(post_meta, sync_channel, workspace)]),
-            patch("handlers.message.helpers.find_origin_sync_channel", return_value=sync_channel),
+            patch("handlers.message.helpers.get_origin_sync_channel", return_value=sync_channel),
             patch("handlers.message.helpers.resolve_workspace_name", return_value="Source"),
             patch("handlers.message.helpers.run_sync_pipeline", return_value=[]) as pipeline,
         ):
@@ -210,11 +210,11 @@ class TestHandleMessageEditForwardsLayoutBlocks:
 class TestDestPostForwardsLayoutBlocks:
     def test_does_not_flatten_into_a_single_section(self):
         ctx = make_event_context(
-            msg_text=text_from_blocks(content_blocks_for_sync(_preblast_blocks())),
+            msg_text=text_from_blocks(build_content_blocks_for_sync(_preblast_blocks())),
             mentioned_users=[{"user_id": "U_SRC", "user_name": "Loboto"}],
             user_id=None,
             reply_broadcast=False,
-            content_blocks=content_blocks_for_sync(_preblast_blocks()),
+            content_blocks=build_content_blocks_for_sync(_preblast_blocks()),
         )
         with (
             patch("helpers.slack_write.decrypt_bot_token", return_value="xoxb"),
@@ -254,7 +254,7 @@ class TestPostMessageSkipsPrependWhenBodyBlocksPresent:
     def test_section_blocks_are_the_body(self):
         slack = MagicMock()
         slack.chat_postMessage.return_value = {"ts": "1.2"}
-        body_blocks = content_blocks_for_sync(_preblast_blocks())
+        body_blocks = build_content_blocks_for_sync(_preblast_blocks())
         with patch("helpers.slack_api.WebClient", return_value=slack):
             post_message(
                 bot_token="xoxb",
@@ -426,7 +426,7 @@ class TestRewriteContentBlocksRichText:
 
     def test_rich_text_unmapped_user_uses_code_ticked_display_name(self):
         from helpers.message_blocks import rewrite_content_blocks
-        from helpers.user_map import unmapped_author_label
+        from helpers.user_map import format_unmapped_author_label
 
         blocks = [
             {
@@ -446,7 +446,7 @@ class TestRewriteContentBlocksRichText:
             blocks,
             lambda t: t,
             lambda _u: None,
-            lambda _u: unmapped_author_label("F3ttown Downrange Q", "F3 T-Town Test"),
+            lambda _u: format_unmapped_author_label("F3ttown Downrange Q", "F3 T-Town Test"),
         )
         els = out[0]["elements"][0]["elements"]
         assert els[0] == {
@@ -460,7 +460,7 @@ class TestRewriteContentBlocksRichText:
 class TestBlockKitLimits:
     def test_content_blocks_trimmed_to_fifty(self):
         blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": f"b{i}"}} for i in range(55)]
-        out = content_blocks_for_sync(blocks)
+        out = build_content_blocks_for_sync(blocks)
         assert len(out) == 50
 
     def test_section_text_clamped_after_rewrite(self):

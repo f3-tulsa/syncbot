@@ -57,21 +57,8 @@ def _download_uploaded_file(file_url: str, token: str) -> tuple[str | None, str 
 
 
 def _is_admin(client: WebClient, user_id: str, body: dict) -> bool:
-    team_id = (
-        helpers.safe_get(body, "team", "id")
-        or helpers.safe_get(body, "view", "team_id")
-        or helpers.safe_get(body, "team_id")
-    )
+    team_id = helpers.get_team_id_from_body(body)
     return helpers.is_workspace_admin(client, user_id) if user_id and team_id else False
-
-
-def _team_id_for_backup_gate(body: dict) -> str | None:
-    """Slack team_id for primary-workspace backup/restore gating."""
-    return (
-        helpers.safe_get(body, "team", "id")
-        or helpers.safe_get(body, "view", "team_id")
-        or helpers.safe_get(body, "team_id")
-    )
 
 
 def _open_dm_channel(client: WebClient, user_id: str) -> str:
@@ -92,10 +79,10 @@ def handle_backup_restore(
     context: dict,
 ) -> None:
     """Open Backup/Restore modal (admin only)."""
-    user_id = helpers.safe_get(body, "user", "id") or helpers.get_user_id_from_body(body)
+    user_id = helpers.get_user_id_from_body(body)
     if not _is_admin(client, user_id, body):
         return
-    if not helpers.is_backup_visible_for_workspace(_team_id_for_backup_gate(body)):
+    if not helpers.is_backup_visible_for_workspace(helpers.get_team_id_from_body(body)):
         return
     trigger_id = helpers.safe_get(body, "trigger_id")
     if not trigger_id:
@@ -157,10 +144,10 @@ def handle_backup_download(
     context: dict,
 ) -> None:
     """Generate backup and send to user's DM (called from modal button)."""
-    user_id = helpers.safe_get(body, "user", "id") or helpers.get_user_id_from_body(body)
+    user_id = helpers.get_user_id_from_body(body)
     if not _is_admin(client, user_id, body):
         return
-    if not helpers.is_backup_visible_for_workspace(_team_id_for_backup_gate(body)):
+    if not helpers.is_backup_visible_for_workspace(helpers.get_team_id_from_body(body)):
         return
     try:
         payload = ei.build_full_backup()
@@ -204,10 +191,10 @@ def handle_backup_restore_submit_ack(
     context: dict,
 ) -> dict | None:
     """Ack phase: validate upload; return errors, push confirm modal, or ``None`` to close."""
-    user_id = helpers.safe_get(body, "user", "id") or helpers.get_user_id_from_body(body)
+    user_id = helpers.get_user_id_from_body(body)
     if not _is_admin(client, user_id, body):
         return None
-    if not helpers.is_backup_visible_for_workspace(_team_id_for_backup_gate(body)):
+    if not helpers.is_backup_visible_for_workspace(helpers.get_team_id_from_body(body)):
         return None
 
     values = helpers.safe_get(body, "view", "state", "values") or {}
@@ -313,10 +300,10 @@ def handle_backup_restore_submit_work(
     context: dict,
 ) -> None:
     """Lazy work phase: run restore after modal closed (happy path)."""
-    user_id = helpers.safe_get(body, "user", "id") or helpers.get_user_id_from_body(body)
+    user_id = helpers.get_user_id_from_body(body)
     if not _is_admin(client, user_id, body):
         return
-    if not helpers.is_backup_visible_for_workspace(_team_id_for_backup_gate(body)):
+    if not helpers.is_backup_visible_for_workspace(helpers.get_team_id_from_body(body)):
         return
 
     values = helpers.safe_get(body, "view", "state", "values") or {}
@@ -359,10 +346,10 @@ def handle_backup_restore_proceed(
     context: dict,
 ) -> None:
     """Proceed with restore after user clicked the danger button despite warnings."""
-    user_id = helpers.safe_get(body, "user", "id") or helpers.get_user_id_from_body(body)
+    user_id = helpers.get_user_id_from_body(body)
     if not _is_admin(client, user_id, body):
         return
-    if not helpers.is_backup_visible_for_workspace(_team_id_for_backup_gate(body)):
+    if not helpers.is_backup_visible_for_workspace(helpers.get_team_id_from_body(body)):
         return
     from helpers._cache import _cache_get
 
@@ -406,8 +393,8 @@ def handle_data_migration(
     """Open Data Migration modal (primary-workspace admin only, federation enabled)."""
     if not helpers.federation_enabled():
         return
-    user_id = helpers.safe_get(body, "user", "id") or helpers.get_user_id_from_body(body)
-    team_id = _team_id_for_backup_gate(body)
+    user_id = helpers.get_user_id_from_body(body)
+    team_id = helpers.get_team_id_from_body(body)
     if not _is_admin(client, user_id, body) or not helpers.is_primary_workspace(team_id):
         return
     trigger_id = helpers.safe_get(body, "trigger_id")
@@ -474,8 +461,8 @@ def handle_data_migration_export(
     """Export workspace migration JSON and send to user's DM."""
     if not helpers.federation_enabled():
         return
-    user_id = helpers.safe_get(body, "user", "id") or helpers.get_user_id_from_body(body)
-    team_id = helpers.safe_get(body, "team", "id") or helpers.safe_get(body, "team_id")
+    user_id = helpers.get_user_id_from_body(body)
+    team_id = helpers.get_team_id_from_body(body)
     if not _is_admin(client, user_id, body):
         return
     workspace_record = helpers.get_workspace_record(team_id, body, context, client)
@@ -506,8 +493,8 @@ def _data_migration_prepare(
     """
     if not helpers.federation_enabled():
         return None, None, None, None, None
-    user_id = helpers.safe_get(body, "user", "id") or helpers.get_user_id_from_body(body)
-    team_id = helpers.safe_get(body, "view", "team_id") or helpers.safe_get(body, "team_id")
+    user_id = helpers.get_user_id_from_body(body)
+    team_id = helpers.get_team_id_from_body(body)
     if not _is_admin(client, user_id, body):
         return None, None, None, None, None
 
@@ -716,7 +703,7 @@ def handle_data_migration_submit_ack(
     context: dict,
 ) -> dict | None:
     """Ack phase: validate; return errors, push confirm, or ``None`` to close before lazy import."""
-    user_id = helpers.safe_get(body, "user", "id") or helpers.get_user_id_from_body(body)
+    user_id = helpers.get_user_id_from_body(body)
     err, data, group_id, team_id_to_workspace_id, workspace_record = _data_migration_prepare(body, client, context)
     if err is not None:
         return err
@@ -814,7 +801,7 @@ def handle_data_migration_proceed(
     """Proceed with import after user clicked the danger button despite warnings."""
     if not helpers.federation_enabled():
         return
-    user_id = helpers.safe_get(body, "user", "id") or helpers.get_user_id_from_body(body)
+    user_id = helpers.get_user_id_from_body(body)
     if not _is_admin(client, user_id, body):
         return
     from helpers._cache import _cache_get

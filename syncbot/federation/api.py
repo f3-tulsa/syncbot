@@ -47,7 +47,7 @@ _logger = logging.getLogger(__name__)
 _NOT_FOUND = (404, {"message": "Not Found"})
 
 
-def _find_post_records(post_id: str, sync_channel_id: int) -> list[schemas.PostMeta]:
+def _get_post_records(post_id: str, sync_channel_id: int) -> list[schemas.PostMeta]:
     """Look up PostMeta records for a given post_id + sync channel."""
     pid = post_id if isinstance(post_id, bytes) else post_id.encode()[:100]
     return DbManager.find_records(
@@ -172,14 +172,14 @@ def _resolve_mentions_for_federated(msg_text: str, target_workspace_id: int, rem
         if mapping and mapping.target_user_id and method != "none":
             rep = f"<@{mapping.target_user_id}>"
         elif mapping and mapping.source_display_name:
-            rep = helpers.unmapped_author_label(mapping.source_display_name, remote_workspace_label)
+            rep = helpers.format_unmapped_author_label(mapping.source_display_name, remote_workspace_label)
         else:
             entry = dir_by_uid.get(uid)
             display = (entry.display_name or entry.real_name) if entry else None
             if display:
-                rep = helpers.unmapped_author_label(display, remote_workspace_label)
+                rep = helpers.format_unmapped_author_label(display, remote_workspace_label)
             else:
-                rep = helpers.unmapped_author_label(uid, remote_workspace_label)
+                rep = helpers.format_unmapped_author_label(uid, remote_workspace_label)
         msg_text = re.sub(rf"<@{re.escape(uid)}>", rep, msg_text)
 
     return msg_text
@@ -588,7 +588,7 @@ def handle_message_edit(body: dict, fed_ws: schemas.FederatedWorkspace) -> tuple
     # Target bot cannot conversations_info source C IDs; ticks may stay #Cid.
     text = helpers.resolve_channel_references(text, ws_client, None)
 
-    post_records = _find_post_records(post_id, sync_channel.id)
+    post_records = _get_post_records(post_id, sync_channel.id)
 
     photo_blocks = [
         {
@@ -649,7 +649,7 @@ def handle_message_delete(body: dict, fed_ws: schemas.FederatedWorkspace) -> tup
     if not channel_subscribes(sync_channel):
         return 200, {"ok": True, "deleted": 0}
 
-    post_records = _find_post_records(post_id, sync_channel.id)
+    post_records = _get_post_records(post_id, sync_channel.id)
 
     deleted = 0
     for post_meta in post_records:
@@ -697,7 +697,7 @@ def handle_message_react(body: dict, fed_ws: schemas.FederatedWorkspace) -> tupl
     if not channel_subscribes(sync_channel):
         return 200, {"ok": True, "applied": 0}
 
-    post_records = _find_post_records(post_id, sync_channel.id)
+    post_records = _get_post_records(post_id, sync_channel.id)
     source_user_id = body.get("user_id")
     mapped_local = None
     if source_user_id:

@@ -10,8 +10,8 @@ from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
 from helpers._cache import _USER_INFO_CACHE_TTL, _cache_get, _cache_set
-from helpers.core import safe_get, synced_from_line_username
-from helpers.message_blocks import blocks_include_body, event_layout_blocks
+from helpers.core import format_synced_from_line, safe_get
+from helpers.message_blocks import blocks_include_body, get_event_layout_blocks
 
 _logger = logging.getLogger(__name__)
 
@@ -204,7 +204,7 @@ def fetch_message_layout_blocks(client: WebClient, event: dict) -> list[dict]:
     messages = res.get("messages") if res is not None else None
     if not isinstance(messages, list) or not messages or not isinstance(messages[0], dict):
         return []
-    return event_layout_blocks(messages[0])
+    return get_event_layout_blocks(messages[0])
 
 
 @slack_retry
@@ -241,7 +241,7 @@ def post_message(
             unfurl_media=False,
         )
     else:
-        username_str = synced_from_line_username(user_name, workspace_name) if user_name else None
+        username_str = format_synced_from_line(user_name, workspace_name) if user_name else None
         kwargs: dict = {
             "channel": channel_id,
             "text": fallback_text,

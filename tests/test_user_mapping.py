@@ -23,7 +23,7 @@ from handlers.users import (  # noqa: E402
     handle_user_mapping_refresh,
 )
 from helpers.user_map import (  # noqa: E402
-    _find_user_map,
+    _get_user_map,
     _map_from_directory,
     ensure_mapped_target_user_id,
     format_last_auto_map_line,
@@ -60,7 +60,7 @@ class TestDirectoryEmailMatch:
             normalized_name="A",
         )
         client = MagicMock()
-        uid, method = _find_user_map(
+        uid, method = _get_user_map(
             "U1",
             source,
             client,

@@ -18,11 +18,11 @@ from helpers.slack_api import delete_message, post_message, slack_error_code
 from helpers.user_action_echo import remember_user_action, slack_message_ts
 from helpers.user_map import (
     apply_mentioned_users,
+    format_unmapped_author_label,
     get_display_name_and_icon_for_synced_message,
     parse_mentioned_users,
     resolve_channel_references,
     resolve_mention_for_workspace,
-    unmapped_author_label,
 )
 
 _logger = logging.getLogger(__name__)
@@ -99,10 +99,90 @@ def build_target_blocks(
         tag = resolved_by_uid.get(uid)
         if tag and not re.fullmatch(r"<@\w+>", tag):
             return tag
-        return unmapped_author_label(names.get(uid) or uid, source_workspace_name)
+        return format_unmapped_author_label(names.get(uid) or uid, source_workspace_name)
 
     rewritten = rewrite_content_blocks(content_blocks, rewrite_mrkdwn, map_user_id, unmapped_label)
     return trim_target_blocks(rewritten + (photo_blocks or []))
+
+
+def _upload_target_files(
+    *,
+    token: str,
+    channel_id: str,
+    files: list,
+    initial_comment: str | None,
+    thread_ts: str | None,
+    reply_broadcast: bool,
+    team_id: str | None,
+    as_user: str | None,
+) -> str | None:
+    """Upload files on the target; remember echo when posted as a mapped user."""
+    _, file_ts = upload_files_to_slack(
+        bot_token=token,
+        channel_id=channel_id,
+        files=files,
+        initial_comment=initial_comment,
+        thread_ts=thread_ts,
+        reply_broadcast=reply_broadcast,
+    )
+    if as_user and file_ts:
+        remember_message_echo(team_id, as_user, channel_id, file_ts)
+    return file_ts
+
+
+def _post_target_text(
+    *,
+    token: str,
+    channel_id: str,
+    adapted_text: str,
+    target_blocks: list[dict] | None,
+    thread_ts: str | None,
+    reply_broadcast: bool,
+    customize: bool,
+    name_for_target: str,
+    target_icon_url: str | None,
+    user_avatar_url: str | None,
+    remote_workspace_label: str | None,
+    file_refs: list,
+    file_notice: str,
+    team_id: str | None,
+    as_user: str | None,
+) -> tuple[str | None, str | None, str | None]:
+    """Post target text (optional blocks), then optional threaded files."""
+    post_kwargs: dict[str, Any] = {
+        "bot_token": token,
+        "channel_id": channel_id,
+        "msg_text": adapted_text,
+        "blocks": target_blocks or None,
+        "thread_ts": thread_ts,
+        "reply_broadcast": reply_broadcast,
+    }
+    if customize:
+        post_kwargs["user_name"] = name_for_target
+        post_kwargs["user_profile_url"] = target_icon_url or user_avatar_url
+        post_kwargs["workspace_name"] = remote_workspace_label
+
+    res = post_message(**post_kwargs)
+    ts = safe_get(res, "ts")
+    split_file_ts: str | None = None
+
+    if file_refs and ts:
+        file_thread_ts = thread_ts or ts
+        file_broadcast = reply_broadcast or thread_ts is None
+        split_file_ts = _upload_target_files(
+            token=token,
+            channel_id=channel_id,
+            files=file_refs,
+            initial_comment=file_notice,
+            thread_ts=file_thread_ts,
+            reply_broadcast=file_broadcast,
+            team_id=team_id,
+            as_user=as_user,
+        )
+
+    if as_user and ts:
+        remember_message_echo(team_id, as_user, channel_id, ts)
+    return ts, split_file_ts, as_user
 
 
 def slack_write_create(
@@ -186,52 +266,34 @@ def slack_write_create(
 
     def _write(token: str, customize: bool, as_user: str | None) -> tuple[str | None, str | None, str | None]:
         if file_refs and not msg_text.strip() and not content_blocks:
-            _, file_ts = upload_files_to_slack(
-                bot_token=token,
+            file_ts = _upload_target_files(
+                token=token,
                 channel_id=sync_channel.channel_id,
                 files=file_refs,
                 initial_comment=file_notice,
                 thread_ts=thread_ts,
                 reply_broadcast=reply_broadcast,
+                team_id=workspace.team_id,
+                as_user=as_user,
             )
-            if as_user and file_ts:
-                remember_message_echo(workspace.team_id, as_user, sync_channel.channel_id, file_ts)
             return file_ts, None, as_user
-
-        post_kwargs: dict[str, Any] = {
-            "bot_token": token,
-            "channel_id": sync_channel.channel_id,
-            "msg_text": adapted_text,
-            "blocks": target_blocks or None,
-            "thread_ts": thread_ts,
-            "reply_broadcast": reply_broadcast,
-        }
-        if customize:
-            post_kwargs["user_name"] = name_for_target
-            post_kwargs["user_profile_url"] = target_icon_url or user_avatar_url
-            post_kwargs["workspace_name"] = remote_workspace_label
-
-        res = post_message(**post_kwargs)
-        ts = safe_get(res, "ts")
-        split_file_ts: str | None = None
-
-        if file_refs and ts:
-            file_thread_ts = thread_ts or ts
-            file_broadcast = reply_broadcast or thread_ts is None
-            _, split_file_ts = upload_files_to_slack(
-                bot_token=token,
-                channel_id=sync_channel.channel_id,
-                files=file_refs,
-                initial_comment=file_notice,
-                thread_ts=file_thread_ts,
-                reply_broadcast=file_broadcast,
-            )
-
-        if as_user and ts:
-            remember_message_echo(workspace.team_id, as_user, sync_channel.channel_id, ts)
-        if as_user and split_file_ts:
-            remember_message_echo(workspace.team_id, as_user, sync_channel.channel_id, split_file_ts)
-        return ts, split_file_ts, as_user
+        return _post_target_text(
+            token=token,
+            channel_id=sync_channel.channel_id,
+            adapted_text=adapted_text,
+            target_blocks=target_blocks,
+            thread_ts=thread_ts,
+            reply_broadcast=reply_broadcast,
+            customize=customize,
+            name_for_target=name_for_target,
+            target_icon_url=target_icon_url,
+            user_avatar_url=user_avatar_url,
+            remote_workspace_label=remote_workspace_label,
+            file_refs=file_refs,
+            file_notice=file_notice,
+            team_id=workspace.team_id,
+            as_user=as_user,
+        )
 
     try:
         return _write(write_token, use_customize, posted_as)

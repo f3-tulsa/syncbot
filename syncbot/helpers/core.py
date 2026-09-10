@@ -32,7 +32,7 @@ def format_error_dm(summary: str, details: dict[str, Any] | None = None) -> str:
     return f"{summary}\n```\n" + "\n".join(lines) + "\n```"
 
 
-def synced_from_line_username(display_name: str | None, workspace_name: str | None = None) -> str:
+def format_synced_from_line(display_name: str | None, workspace_name: str | None = None) -> str:
     """Display name used on the Slack from line for a synced message.
 
     Mapped authors pass ``workspace_name=None``. Unmapped authors include
@@ -46,7 +46,7 @@ def synced_from_line_username(display_name: str | None, workspace_name: str | No
 
 def code_ticked_display_name(display_name: str | None, workspace_name: str | None = None) -> str:
     """Name in code ticks, optionally with (Workspace). From-line, unmapped people, source #channel."""
-    return f"`{synced_from_line_username(display_name, workspace_name)}`"
+    return f"`{format_synced_from_line(display_name, workspace_name)}`"
 
 
 def format_file_share_notice(display_name: str | None, workspace_name: str | None = None) -> str:
@@ -71,8 +71,42 @@ def safe_get(data: Any, *keys: Any) -> Any:
 
 
 def get_user_id_from_body(body: dict) -> str | None:
-    """Extract the acting user's ID from any Slack request payload."""
-    return safe_get(body, "user_id") or safe_get(body, "user", "id")
+    """Extract the acting user's ID from any Slack request payload.
+
+    Order: ``user.id``, ``user_id``, then ``event.user`` (string) or
+    ``event.user.id``.
+    """
+    user = safe_get(body, "user", "id") or safe_get(body, "user_id")
+    if user:
+        return user
+    event_user = safe_get(body, "event", "user")
+    if isinstance(event_user, str) and event_user:
+        return event_user
+    if isinstance(event_user, dict):
+        return event_user.get("id")
+    return None
+
+
+def get_team_id_from_body(body: dict) -> str | None:
+    """Extract the Slack team ID from any Slack request payload.
+
+    Order: ``view.team_id``, ``event.view.team_id``, ``team.id``, ``team_id``,
+    ``user.team_id``, then ``event.team`` when it is a string. Slack payloads
+    do not set two different team ids at once.
+    """
+    team = (
+        safe_get(body, "view", "team_id")
+        or safe_get(body, "event", "view", "team_id")
+        or safe_get(body, "team", "id")
+        or safe_get(body, "team_id")
+        or safe_get(body, "user", "team_id")
+    )
+    if team:
+        return team
+    event_team = safe_get(body, "event", "team")
+    if isinstance(event_team, str) and event_team:
+        return event_team
+    return None
 
 
 _REQUIRE_ADMIN_WARNED = False
@@ -187,9 +221,9 @@ def format_admin_label(client, user_id: str, workspace) -> tuple[str, str]:
 _PREFIXED_ACTIONS = (
     actions.CONFIG_REMOVE_FEDERATION_CONNECTION,
     actions.CONFIG_LEAVE_GROUP,
-    actions.CONFIG_ACCEPT_GROUP_REQUEST,
-    actions.CONFIG_DECLINE_GROUP_REQUEST,
-    actions.CONFIG_CANCEL_GROUP_REQUEST,
+    actions.CONFIG_ACCEPT_GROUP_INVITE,
+    actions.CONFIG_DECLINE_GROUP_INVITE,
+    actions.CONFIG_CANCEL_GROUP_INVITE,
     actions.CONFIG_PROMOTE_TO_OWNER,
     actions.CONFIG_DEMOTE_SELF,
     actions.CONFIG_DISBAND_GROUP,

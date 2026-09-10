@@ -65,7 +65,7 @@ class TestAcceptGroupInviteAuthorization:
             patch("handlers.group.builders.refresh_home_tab_for_workspace"),
         ):
             handle_accept_group_invite(
-                _invite_body(actions.CONFIG_ACCEPT_GROUP_REQUEST), MagicMock(), MagicMock(), context={}
+                _invite_body(actions.CONFIG_ACCEPT_GROUP_INVITE), MagicMock(), MagicMock(), context={}
             )
         return update_records
 
@@ -86,7 +86,7 @@ class TestAcceptGroupInviteAuthorization:
             patch("handlers.group.DbManager.update_records") as update_records,
         ):
             handle_accept_group_invite(
-                _invite_body(actions.CONFIG_ACCEPT_GROUP_REQUEST), MagicMock(), MagicMock(), context={}
+                _invite_body(actions.CONFIG_ACCEPT_GROUP_INVITE), MagicMock(), MagicMock(), context={}
             )
 
         assert not get_record.called
@@ -114,22 +114,22 @@ class TestDeclineGroupInviteAuthorization:
         return delete_records
 
     def test_invited_workspace_may_decline(self):
-        assert self._run(actions.CONFIG_DECLINE_GROUP_REQUEST, INVITED_WS_ID).called
+        assert self._run(actions.CONFIG_DECLINE_GROUP_INVITE, INVITED_WS_ID).called
 
     def test_third_party_may_not_decline(self):
-        assert not self._run(actions.CONFIG_DECLINE_GROUP_REQUEST, THIRD_PARTY_WS_ID).called
+        assert not self._run(actions.CONFIG_DECLINE_GROUP_INVITE, THIRD_PARTY_WS_ID).called
 
     def test_inviter_may_not_decline(self):
-        assert not self._run(actions.CONFIG_DECLINE_GROUP_REQUEST, INVITER_WS_ID).called
+        assert not self._run(actions.CONFIG_DECLINE_GROUP_INVITE, INVITER_WS_ID).called
 
     def test_inviting_workspace_may_cancel(self):
-        assert self._run(actions.CONFIG_CANCEL_GROUP_REQUEST, INVITER_WS_ID).called
+        assert self._run(actions.CONFIG_CANCEL_GROUP_INVITE, INVITER_WS_ID).called
 
     def test_third_party_may_not_cancel(self):
-        assert not self._run(actions.CONFIG_CANCEL_GROUP_REQUEST, THIRD_PARTY_WS_ID).called
+        assert not self._run(actions.CONFIG_CANCEL_GROUP_INVITE, THIRD_PARTY_WS_ID).called
 
     def test_invitee_may_not_cancel(self):
-        assert not self._run(actions.CONFIG_CANCEL_GROUP_REQUEST, INVITED_WS_ID).called
+        assert not self._run(actions.CONFIG_CANCEL_GROUP_INVITE, INVITED_WS_ID).called
 
     def test_group_owner_may_cancel(self):
         """A group owner has standing over membership, so it may cancel a pending invite."""
@@ -148,7 +148,7 @@ class TestDeclineGroupInviteAuthorization:
             patch("handlers.group.builders.refresh_home_tab_for_workspace"),
         ):
             handle_decline_group_invite(
-                _invite_body(actions.CONFIG_CANCEL_GROUP_REQUEST), MagicMock(), MagicMock(), context={}
+                _invite_body(actions.CONFIG_CANCEL_GROUP_INVITE), MagicMock(), MagicMock(), context={}
             )
 
         assert delete_records.called
@@ -160,7 +160,7 @@ class TestDeclineGroupInviteAuthorization:
             patch("handlers.group.DbManager.delete_records") as delete_records,
         ):
             handle_decline_group_invite(
-                _invite_body(actions.CONFIG_DECLINE_GROUP_REQUEST), MagicMock(), MagicMock(), context={}
+                _invite_body(actions.CONFIG_DECLINE_GROUP_INVITE), MagicMock(), MagicMock(), context={}
             )
 
         assert not get_record.called
@@ -208,7 +208,6 @@ class TestJoinGroupSubmit:
 
         with (
             patch("handlers.group._get_authorized_workspace", return_value=("U1", workspace)),
-            patch("handlers.group.forms.ENTER_GROUP_CODE_FORM.get_selected_values", return_value={}),
             patch("handlers.group.helpers._cache_get", return_value=0),
             patch("handlers.group.helpers._cache_set"),
             patch("handlers.group.DbManager.find_records", return_value=[]),

@@ -13,21 +13,21 @@ from helpers.sync_participation import (
     already_subscribed_to_source,
     channel_has_membership,
     channel_subscribes,
-    find_origin_sync_channel,
+    get_origin_sync_channel,
     iter_publish_targets,
     origin_publishes_anywhere,
-    participation_flags,
+    parse_participation_flags,
     participation_label,
 )
 from helpers.sync_pipeline import run_sync_pipeline
 
 
 def test_participation_flags():
-    assert participation_flags("publish_only") == (True, False)
-    assert participation_flags("subscribe_only") == (False, True)
-    assert participation_flags("publish_and_subscribe") == (True, True)
-    assert participation_flags("subscribe_and_publish") == (True, True)
-    assert participation_flags(None) == (True, True)
+    assert parse_participation_flags("publish_only") == (True, False)
+    assert parse_participation_flags("subscribe_only") == (False, True)
+    assert parse_participation_flags("publish_and_subscribe") == (True, True)
+    assert parse_participation_flags("subscribe_and_publish") == (True, True)
+    assert parse_participation_flags(None) == (True, True)
 
 
 def test_participation_label():
@@ -103,7 +103,7 @@ def test_subscribe_only_never_originates_messages_or_reactions(real_db):
     _channel(sync, ws, "C_SUB", publishes=False, subscribes=True)
 
     assert not origin_publishes_anywhere("C_SUB")
-    assert find_origin_sync_channel("C_SUB") is None
+    assert get_origin_sync_channel("C_SUB") is None
     assert iter_publish_targets("C_SUB") == []
 
 
