@@ -39,7 +39,7 @@ def handle_team_join(
     """
     event = body.get("event", {})
     user_data = event.get("user", {})
-    team_id = helpers.safe_get(body, "team_id")
+    team_id = helpers.get_team_id_from_body(body)
 
     if not user_data or not team_id:
         return
@@ -71,7 +71,7 @@ def handle_user_profile_changed(
     """Handle a user_profile_changed event: update directory and notify group members."""
     event = body.get("event", {})
     user_data = event.get("user", {})
-    team_id = helpers.safe_get(body, "team_id")
+    team_id = helpers.get_team_id_from_body(body)
 
     if not user_data or not team_id:
         return

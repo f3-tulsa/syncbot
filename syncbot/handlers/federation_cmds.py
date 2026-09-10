@@ -19,7 +19,7 @@ _logger = logging.getLogger(__name__)
 
 def _dm_actor(client: WebClient, body: dict, text: str) -> None:
     """DM the acting user. Best-effort; never raises."""
-    user_id = helpers.safe_get(body, "user", "id") or helpers.get_user_id_from_body(body)
+    user_id = helpers.get_user_id_from_body(body)
     if not user_id:
         return
     try:
@@ -40,11 +40,7 @@ def _require_primary_admin(
 ) -> schemas.Workspace | None:
     """Return the workspace when the actor is a primary-workspace Slack admin."""
     user_id = helpers.get_user_id_from_body(body)
-    team_id = (
-        helpers.safe_get(body, "view", "team_id")
-        or helpers.safe_get(body, "team", "id")
-        or helpers.safe_get(body, "team_id")
-    )
+    team_id = helpers.get_team_id_from_body(body)
     if not user_id or not team_id:
         _logger.warning("authorization_denied", extra={"user_id": user_id, "action": action})
         return None
@@ -217,7 +213,7 @@ def handle_federation_label_submit(
         )
         return
 
-    user_id = helpers.safe_get(body, "user", "id") or helpers.get_user_id_from_body(body)
+    user_id = helpers.get_user_id_from_body(body)
     if user_id:
         try:
             dm = client.conversations_open(users=[user_id])
@@ -395,7 +391,7 @@ def handle_federation_code_submit(
 
     _exchange_user_directory(fed_ws, workspace_record)
 
-    acting_user_id = helpers.safe_get(body, "user", "id") or helpers.get_user_id_from_body(body)
+    acting_user_id = helpers.get_user_id_from_body(body)
     builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=acting_user_id)
 
 
@@ -440,8 +436,8 @@ def handle_remove_federation_connection(
 
     _logger.info("federation_connection_removed", extra={"member_id": member_id})
 
-    team_id = helpers.safe_get(body, "team", "id") or helpers.safe_get(body, "view", "team_id")
+    team_id = helpers.get_team_id_from_body(body)
     workspace_record = helpers.get_workspace_record(team_id, body, context, client) if team_id else None
     if workspace_record:
-        acting_user_id = helpers.safe_get(body, "user", "id") or helpers.get_user_id_from_body(body)
+        acting_user_id = helpers.get_user_id_from_body(body)
         builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=acting_user_id)

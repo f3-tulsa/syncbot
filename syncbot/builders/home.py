@@ -10,8 +10,6 @@ import helpers
 from builders._common import (
     _get_group_members,
     _get_groups_for_workspace,
-    _get_team_id,
-    _get_user_id,
     _get_workspace_info,
 )
 from builders.channel_sync import _build_inline_channel_sync
@@ -302,8 +300,8 @@ def build_home_tab(
     workspace: Workspace | None = None,
 ) -> list[dict] | None:
     """Build and publish the App Home tab. If return_blocks is True, return block dicts and do not publish."""
-    team_id = _get_team_id(body)
-    user_id = user_id or _get_user_id(body)
+    team_id = helpers.get_team_id_from_body(body)
+    user_id = user_id or helpers.get_user_id_from_body(body)
     if not team_id or not user_id:
         _logger.warning("build_home_tab: missing team_id or user_id")
         return None
@@ -447,13 +445,13 @@ def _build_pending_invite_section(
             elements=[
                 orm.ButtonElement(
                     label=":white_check_mark: Accept",
-                    action=f"{actions.CONFIG_ACCEPT_GROUP_REQUEST}_{invite.id}",
+                    action=f"{actions.CONFIG_ACCEPT_GROUP_INVITE}_{invite.id}",
                     value=str(invite.id),
                     style="primary",
                 ),
                 orm.ButtonElement(
                     label=":x: Decline",
-                    action=f"{actions.CONFIG_DECLINE_GROUP_REQUEST}_{invite.id}",
+                    action=f"{actions.CONFIG_DECLINE_GROUP_INVITE}_{invite.id}",
                     value=str(invite.id),
                     style="danger",
                 ),
@@ -630,7 +628,7 @@ def _build_group_section(
                 elements=[
                     orm.ButtonElement(
                         label=":x: Cancel Invite",
-                        action=f"{actions.CONFIG_CANCEL_GROUP_REQUEST}_{pending_member.id}",
+                        action=f"{actions.CONFIG_CANCEL_GROUP_INVITE}_{pending_member.id}",
                         value=str(pending_member.id),
                         style="danger",
                     ),

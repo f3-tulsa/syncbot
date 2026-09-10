@@ -210,6 +210,45 @@ class TestGetRequestType:
         assert helpers.get_request_type(picker) == ("block_actions", actions.CONFIG_JOIN_SYNC_SELECT)
 
 
+class TestBodyIdExtractors:
+    def test_block_action_user_and_team(self):
+        body = {"user": {"id": "U1", "team_id": "T_USER"}, "team": {"id": "T1"}, "team_id": "T_TOP"}
+        assert helpers.get_user_id_from_body(body) == "U1"
+        assert helpers.get_team_id_from_body(body) == "T1"
+
+    def test_view_submission_prefers_view_team_id(self):
+        body = {
+            "user": {"id": "U2", "team_id": "T_USER"},
+            "view": {"team_id": "T_VIEW"},
+            "team": {"id": "T_TEAM"},
+        }
+        assert helpers.get_user_id_from_body(body) == "U2"
+        assert helpers.get_team_id_from_body(body) == "T_VIEW"
+
+    def test_app_home_opened_event_user_string(self):
+        body = {
+            "team_id": "T_EVENT",
+            "event": {"type": "app_home_opened", "user": "U_HOME"},
+        }
+        assert helpers.get_user_id_from_body(body) == "U_HOME"
+        assert helpers.get_team_id_from_body(body) == "T_EVENT"
+
+    def test_backup_home_button_uses_team_id(self):
+        body = {"user": {"id": "U3"}, "team": {"id": "T_BACKUP"}}
+        assert helpers.get_user_id_from_body(body) == "U3"
+        assert helpers.get_team_id_from_body(body) == "T_BACKUP"
+
+    def test_event_view_team_id(self):
+        body = {"event": {"view": {"team_id": "T_EVIEW"}, "user": {"id": "U4"}}}
+        assert helpers.get_user_id_from_body(body) == "U4"
+        assert helpers.get_team_id_from_body(body) == "T_EVIEW"
+
+    def test_member_joined_channel_event_team(self):
+        body = {"event": {"type": "member_joined_channel", "user": "U5", "team": "T_JOIN"}}
+        assert helpers.get_user_id_from_body(body) == "U5"
+        assert helpers.get_team_id_from_body(body) == "T_JOIN"
+
+
 # -----------------------------------------------------------------------
 # slack_retry decorator
 # -----------------------------------------------------------------------

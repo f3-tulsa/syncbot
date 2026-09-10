@@ -282,13 +282,6 @@ def invalidate_home_tab_caches_for_all_teams(team_ids: list[str]) -> None:
         invalidate_home_tab_caches_for_team(tid)
 
 
-def invalidate_channel_memberships_cache(channel_id: str) -> None:
-    """Clear membership caches for a channel."""
-    from helpers.sync_participation import invalidate_channel_memberships
-
-    invalidate_channel_memberships(channel_id)
-
-
 # ---------------------------------------------------------------------------
 # Data migration export (workspace-scoped)
 # ---------------------------------------------------------------------------

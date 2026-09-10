@@ -146,13 +146,13 @@ class TestPurgeSync:
 
         _, sync, _ = _build_sync()
 
-        assert helpers.find_channel_memberships("C_ACTIVE")
+        assert helpers.get_channel_memberships("C_ACTIVE")
         assert _cache_get("channel_memberships:C_ACTIVE:active") is not None
 
         helpers.purge_sync(sync.id)
 
         assert _cache_get("channel_memberships:C_ACTIVE:active") is None
-        assert helpers.find_channel_memberships("C_ACTIVE") == []
+        assert helpers.get_channel_memberships("C_ACTIVE") == []
 
 
 class TestPurgeSyncChannels:
@@ -173,7 +173,7 @@ class TestPurgeSyncChannels:
 
         _, _, channels = _build_sync()
 
-        helpers.find_channel_memberships("C_ACTIVE")
+        helpers.get_channel_memberships("C_ACTIVE")
         helpers.purge_sync_channels([channels[0]])
 
         assert _cache_get("channel_memberships:C_ACTIVE:active") is None

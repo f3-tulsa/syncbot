@@ -109,7 +109,7 @@ class TestFederationReactionFallback:
 
         with (
             patch.object(federation_api, "_resolve_channel_for_federated", return_value=(sync_channel, workspace)),
-            patch.object(federation_api, "_find_post_records", return_value=[post_meta]),
+            patch.object(federation_api, "_get_post_records", return_value=[post_meta]),
             patch("helpers.reaction.apply_reaction_to_target", return_value=apply_result) as apply_mock,
             patch.object(federation_api.DbManager, "create_records"),
         ):
@@ -176,7 +176,7 @@ class TestFederationReactionFallback:
 
         with (
             patch.object(federation_api, "_resolve_channel_for_federated", return_value=(sync_channel, workspace)),
-            patch.object(federation_api, "_find_post_records", return_value=[SimpleNamespace(ts=1.0)]),
+            patch.object(federation_api, "_get_post_records", return_value=[SimpleNamespace(ts=1.0)]),
             patch("helpers.reaction.apply_reaction_to_target") as apply_mock,
         ):
             status, resp = federation_api.handle_message_react(body, fed_ws)
@@ -210,7 +210,7 @@ class TestFederationInboundTokenLookup:
 
         with (
             patch.object(federation_api, "_resolve_channel_for_federated", return_value=(sync_channel, workspace)),
-            patch.object(federation_api, "_find_post_records", return_value=[post_meta]),
+            patch.object(federation_api, "_get_post_records", return_value=[post_meta]),
             patch.object(federation_api, "_ensure_federated_author_mapped", return_value="U_LOCAL"),
             patch.object(federation_api.helpers, "decrypt_bot_token", return_value="xoxb-bot"),
             patch.object(federation_api.helpers, "get_user_info", return_value=("Local Alice", None)),
@@ -248,7 +248,7 @@ class TestFederationInboundTokenLookup:
 
         with (
             patch.object(federation_api, "_resolve_channel_for_federated", return_value=(sync_channel, workspace)),
-            patch.object(federation_api, "_find_post_records", return_value=[post_meta]),
+            patch.object(federation_api, "_get_post_records", return_value=[post_meta]),
             patch("helpers.reaction.get_user_token", return_value=None),
             patch("helpers.reaction.decrypt_bot_token") as decrypt,
             patch("helpers.reaction.WebClient") as web_client,
@@ -282,7 +282,7 @@ class TestFederationInboundTokenLookup:
 
         with (
             patch.object(federation_api, "_resolve_channel_for_federated", return_value=(sync_channel, workspace)),
-            patch.object(federation_api, "_find_post_records", return_value=[post_meta]),
+            patch.object(federation_api, "_get_post_records", return_value=[post_meta]),
             patch.object(federation_api, "_ensure_federated_author_mapped", return_value=None),
             patch("helpers.reaction.get_user_token") as get_token,
             patch("helpers.reaction.decrypt_bot_token") as decrypt,
@@ -323,7 +323,7 @@ class TestFederationInboundTokenLookup:
 
         with (
             patch.object(federation_api, "_resolve_channel_for_federated", return_value=(sync_channel, workspace)),
-            patch.object(federation_api, "_find_post_records", return_value=[post_meta]),
+            patch.object(federation_api, "_get_post_records", return_value=[post_meta]),
             patch.object(federation_api, "_ensure_federated_author_mapped", return_value=None),
             patch("helpers.reaction.get_user_token", return_value=None),
             patch("helpers.reaction.decrypt_bot_token", return_value="xoxb-bot"),
@@ -382,7 +382,7 @@ class TestFederationInboundTokenLookup:
 
         with (
             patch.object(federation_api, "_resolve_channel_for_federated", return_value=(sync_channel, workspace)),
-            patch.object(federation_api, "_find_post_records", return_value=[post_meta]),
+            patch.object(federation_api, "_get_post_records", return_value=[post_meta]),
             patch.object(federation_api, "_ensure_federated_author_mapped", return_value=None),
             patch("helpers.reaction.get_user_token", return_value=None),
             patch("helpers.reaction.decrypt_bot_token", return_value="xoxb-bot"),

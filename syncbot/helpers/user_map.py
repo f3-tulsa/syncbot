@@ -234,7 +234,7 @@ def _map_from_directory(
     return None, "none"
 
 
-def _find_user_map(
+def _get_user_map(
     source_user_id: str,
     source_profile: dict[str, Any],
     target_client: WebClient | None,
@@ -449,25 +449,6 @@ def _persist_mapping_row(
     request_scope_delete(f"mapping_row:{source_workspace_id}:{source_user_id}:{target_workspace_id}")
 
 
-def _persist_email_mapping(
-    *,
-    source_user_id: str,
-    source_workspace_id: int,
-    target_workspace_id: int,
-    target_user_id: str,
-    display_name: str,
-) -> None:
-    """Write or upgrade a mapping row to ``map_method=email``."""
-    _persist_mapping_row(
-        source_user_id=source_user_id,
-        source_workspace_id=source_workspace_id,
-        target_workspace_id=target_workspace_id,
-        target_user_id=target_user_id,
-        method="email",
-        display_name=display_name,
-    )
-
-
 def ensure_mapped_target_user_id(
     source_user_id: str,
     source_workspace_id: int,
@@ -631,7 +612,7 @@ def get_display_name_and_icon_for_synced_message(
     return source_display_name, source_icon_url, False, None
 
 
-def unmapped_author_label(display_name: str | None, source_workspace_name: str | None) -> str:
+def format_unmapped_author_label(display_name: str | None, source_workspace_name: str | None) -> str:
     """Code-ticked label for an unmapped author in synced message text."""
     return code_ticked_display_name(display_name, source_workspace_name)
 
@@ -648,7 +629,7 @@ def resolve_mention_for_workspace(
     source_ws_name = resolve_workspace_name(source_ws) if source_ws else None
 
     def _unmapped_label(name: str) -> str:
-        return unmapped_author_label(name, source_ws_name)
+        return format_unmapped_author_label(name, source_ws_name)
 
     mapping = _mapping_row_for_pair(source_user_id, source_workspace_id, target_workspace_id)
     if mapping and _is_mapping_fresh(mapping):
@@ -660,7 +641,7 @@ def resolve_mention_for_workspace(
     if not source_profile:
         return _unmapped_label(source_user_id)
 
-    target_uid, method = _find_user_map(source_user_id, source_profile, target_client, target_workspace_id)
+    target_uid, method = _get_user_map(source_user_id, source_profile, target_client, target_workspace_id)
     display = source_profile.get("display_name") or source_profile.get("real_name") or source_user_id
     _persist_mapping_row(
         source_user_id=source_user_id,
@@ -725,7 +706,7 @@ def apply_mentioned_users(
             fallback = user_info.get("user_name") or uid
             source_ws = get_workspace_by_id(source_workspace_id) if source_workspace_id else None
             ws_label = resolve_workspace_name(source_ws) if source_ws else None
-            replace_list.append(unmapped_author_label(fallback, ws_label))
+            replace_list.append(format_unmapped_author_label(fallback, ws_label))
 
     replace_iter = iter(replace_list)
 
@@ -961,7 +942,7 @@ def run_auto_map_for_workspace(
             still_unmatched += 1
             continue
 
-        target_uid, method = _find_user_map(
+        target_uid, method = _get_user_map(
             mapping.source_user_id,
             source_profile,
             target_client,

@@ -15,7 +15,6 @@ from db import DbManager, schemas
 from handlers._common import (
     _close_modal_done,
     _ensure_membership_or_rollback,
-    _extract_team_id,
     _get_authorized_workspace,
     _get_selected_conversation_or_option,
     _get_selected_option_value,
@@ -111,15 +110,11 @@ def _valid_reaction_style(value: str | None) -> str | None:
     return None
 
 
-def _participation_from_value(value: str | None) -> tuple[bool, bool]:
-    return helpers.participation_flags(value)
-
-
 def _participation_from_body(body: dict) -> tuple[bool, bool]:
     for action in _PARTICIPATION_ACTIONS:
         value = _get_selected_option_value(body, action)
         if value:
-            return helpers.participation_flags(value)
+            return helpers.parse_participation_flags(value)
     return True, True
 
 
@@ -308,7 +303,7 @@ def _reaction_style_for_edit(
     Edit always shows the type radios. Turning subscribe off should not
     reset Hybrid, Direct, or Off to the new-channel default.
     """
-    from helpers.reaction import default_reaction_style_for_new_channel, reaction_style
+    from helpers.reaction import default_reaction_style_for_new_channel, get_reaction_style
 
     submitted = None
     if body is not None:
@@ -321,7 +316,7 @@ def _reaction_style_for_edit(
     stored = _valid_reaction_style(getattr(sync_channel, "reaction_style", None))
     if stored:
         return stored
-    resolved = _valid_reaction_style(reaction_style(sync_channel))
+    resolved = _valid_reaction_style(get_reaction_style(sync_channel))
     if resolved:
         return resolved
     receives = helpers.channel_subscribes(sync_channel) if subscribes is None else subscribes
@@ -556,8 +551,8 @@ def handle_create_sync_submit_ack(
         client,
         channel_id,
         picker_action,
-        team_id=_extract_team_id(body) or workspace_record.team_id,
-        acting_user_id=helpers.safe_get(body, "user", "id"),
+        team_id=helpers.get_team_id_from_body(body) or workspace_record.team_id,
+        acting_user_id=helpers.get_user_id_from_body(body),
     )
 
 
@@ -589,13 +584,13 @@ def handle_create_sync_submit_work(
         client,
         channel_id,
         picker_action,
-        team_id=_extract_team_id(body) or workspace_record.team_id,
-        acting_user_id=helpers.safe_get(body, "user", "id") or user_id,
+        team_id=helpers.get_team_id_from_body(body) or workspace_record.team_id,
+        acting_user_id=user_id,
     ):
         return
 
-    acting_user_id = helpers.safe_get(body, "user", "id") or user_id
-    team_id = _extract_team_id(body) or workspace_record.team_id
+    acting_user_id = user_id
+    team_id = helpers.get_team_id_from_body(body) or workspace_record.team_id
     channel_name, _is_private = helpers.lookup_channel_meta(
         channel_id,
         workspace_record,
@@ -1171,8 +1166,8 @@ def handle_join_sync_submit_ack(
         client,
         channel_id,
         picker_action,
-        team_id=_extract_team_id(body) or workspace_record.team_id,
-        acting_user_id=helpers.safe_get(body, "user", "id") or user_id,
+        team_id=helpers.get_team_id_from_body(body) or workspace_record.team_id,
+        acting_user_id=user_id,
         workspace_id=workspace_record.id,
         source_sync_id=int(metadata["sync_id"]),
     )
@@ -1205,8 +1200,8 @@ def handle_join_sync_submit(
         client,
         channel_id,
         picker_action,
-        team_id=_extract_team_id(body) or workspace_record.team_id,
-        acting_user_id=helpers.safe_get(body, "user", "id") or user_id,
+        team_id=helpers.get_team_id_from_body(body) or workspace_record.team_id,
+        acting_user_id=user_id,
         workspace_id=workspace_record.id,
         source_sync_id=int(sync_id),
     ):
@@ -1242,11 +1237,11 @@ def handle_join_sync_submit(
             _refresh_group_member_homes(group_id, workspace_record.id, logger, context=context)
         return
 
-    acting_user_id = helpers.safe_get(body, "user", "id") or user_id
+    acting_user_id = user_id
     admin_label = _admin_workspace_label(client, acting_user_id, workspace_record)
     admin_name, _ = helpers.format_admin_label(client, acting_user_id, workspace_record)
 
-    team_id = _extract_team_id(body) or workspace_record.team_id
+    team_id = helpers.get_team_id_from_body(body) or workspace_record.team_id
 
     reaction_style = _parse_reaction_fields(body)
     publishes, subscribes = _participation_from_body(body)

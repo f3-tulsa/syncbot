@@ -42,8 +42,8 @@ def handle_authorize_syncbot(
     _logger.info(
         "authorize_syncbot_clicked",
         extra={
-            "team_id": helpers.safe_get(body, "team", "id"),
-            "user_id": helpers.safe_get(body, "user", "id"),
+            "team_id": helpers.get_team_id_from_body(body),
+            "user_id": helpers.get_user_id_from_body(body),
         },
     )
 
@@ -63,8 +63,8 @@ def handle_refresh_home(
     names refresh at most daily when a workspace is loaded, not via an
     instance-wide ``team_info`` sweep.
     """
-    team_id = helpers.safe_get(body, "view", "team_id") or helpers.safe_get(body, "team", "id")
-    user_id = helpers.safe_get(body, "user", "id") or helpers.get_user_id_from_body(body)
+    team_id = helpers.get_team_id_from_body(body)
+    user_id = helpers.get_user_id_from_body(body)
     if not team_id or not user_id:
         return
 
@@ -120,7 +120,7 @@ def handle_member_joined_channel(
     event = body.get("event", {})
     user_id = event.get("user")
     channel_id = event.get("channel")
-    team_id = helpers.safe_get(body, "team_id") or event.get("team")
+    team_id = helpers.get_team_id_from_body(body)
 
     if not user_id or not channel_id or not team_id:
         return
@@ -166,11 +166,11 @@ def handle_db_reset(
 
     Only when PRIMARY_WORKSPACE matches and ENABLE_DB_RESET is truthy (see helpers.core).
     """
-    team_id = helpers.safe_get(body, "team", "id") or helpers.safe_get(body, "view", "team_id")
+    team_id = helpers.get_team_id_from_body(body)
     if not helpers.is_db_reset_visible_for_workspace(team_id):
         return
 
-    user_id = helpers.safe_get(body, "user", "id") or helpers.get_user_id_from_body(body)
+    user_id = helpers.get_user_id_from_body(body)
     if not user_id or not helpers.is_workspace_admin(client, user_id):
         return
 
@@ -226,7 +226,7 @@ def handle_db_reset_proceed(
 
     Same gating as handle_db_reset (PRIMARY_WORKSPACE + ENABLE_DB_RESET).
     """
-    team_id = helpers.safe_get(body, "team", "id") or helpers.safe_get(body, "view", "team_id")
+    team_id = helpers.get_team_id_from_body(body)
     if not helpers.is_db_reset_visible_for_workspace(team_id):
         return
 

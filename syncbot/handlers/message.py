@@ -25,7 +25,7 @@ def _build_envelope_people(
 ) -> list[dict]:
     """Author plus mentioned users for the source-canonical envelope."""
     people = [
-        helpers.people_entry(
+        helpers.build_people_entry(
             person["user_id"],
             name=person.get("user_name"),
             email=person.get("email"),
@@ -35,7 +35,7 @@ def _build_envelope_people(
         if person.get("user_id")
     ]
     if user_id:
-        people.insert(0, helpers.people_entry(user_id, name=user_name, avatar_url=user_profile_url))
+        people.insert(0, helpers.build_people_entry(user_id, name=user_name, avatar_url=user_profile_url))
     return people
 
 
@@ -50,9 +50,9 @@ def _event_is_bot_post(event: dict) -> bool:
 def _parse_event_fields(body: dict, client: WebClient) -> EventContext:
     """Extract the common fields every message handler needs."""
     event: dict = body.get("event", {})
-    layout_blocks = helpers.content_blocks_for_sync(helpers.event_layout_blocks(event))
+    layout_blocks = helpers.build_content_blocks_for_sync(helpers.get_event_layout_blocks(event))
     if not layout_blocks and _event_is_bot_post(event):
-        layout_blocks = helpers.content_blocks_for_sync(helpers.fetch_message_layout_blocks(client, event))
+        layout_blocks = helpers.build_content_blocks_for_sync(helpers.fetch_message_layout_blocks(client, event))
     event_text = helpers.safe_get(event, "text") or helpers.safe_get(event, "message", "text")
     msg_text = helpers.choose_message_text(event_text, layout_blocks)
     mentioned_users = helpers.parse_mentioned_users(msg_text, client)
@@ -65,7 +65,7 @@ def _parse_event_fields(body: dict, client: WebClient) -> EventContext:
         mentioned_users.extend(helpers.parse_mentioned_users("".join(f"<@{uid}>" for uid in extra_ids), client))
 
     return EventContext(
-        team_id=helpers.safe_get(body, "team_id"),
+        team_id=helpers.get_team_id_from_body(body),
         channel_id=helpers.safe_get(event, "channel"),
         user_id=(helpers.safe_get(event, "user") or helpers.safe_get(event, "message", "user")),
         msg_text=msg_text,
@@ -163,8 +163,8 @@ def _handle_new_post(
     """Publish a brand-new top-level message through the target pipeline."""
     channel_id = ctx["channel_id"]
     user_id = ctx["user_id"]
-    source_records = helpers.find_channel_memberships(channel_id)
-    source_sync_channel = helpers.find_origin_sync_channel(channel_id)
+    source_records = helpers.get_channel_memberships(channel_id)
+    source_sync_channel = helpers.get_origin_sync_channel(channel_id)
     source_workspace = (
         next(
             (workspace for sync_channel, workspace in source_records if sync_channel.id == source_sync_channel.id),
@@ -202,7 +202,7 @@ def _handle_new_post(
         source_ts=source_ts,
         reply_broadcast=bool(ctx.get("reply_broadcast")),
     )
-    post_list = helpers.origin_post_meta_rows(
+    post_list = helpers.build_origin_post_meta_rows(
         source_records,
         channel_id,
         post_uuid,
@@ -246,7 +246,7 @@ def _handle_thread_reply(
     if not post_records:
         helpers.cleanup_temp_files(None, direct_files)
         return
-    source_rows = helpers.find_publishing_post_records(post_records, channel_id)
+    source_rows = helpers.get_publishing_post_records(post_records, channel_id)
     if not source_rows:
         helpers.cleanup_temp_files(None, direct_files)
         return
@@ -278,7 +278,7 @@ def _handle_thread_reply(
         workspace_name=helpers.resolve_workspace_name(source_workspace),
         source_ts=source_ts,
     )
-    post_list = helpers.origin_post_meta_rows(
+    post_list = helpers.build_origin_post_meta_rows(
         source_records,
         channel_id,
         post_uuid,
@@ -323,7 +323,7 @@ def _handle_message_edit(
     post_records = helpers.get_post_records(ts)
     if not post_records:
         return
-    source_rows = helpers.find_publishing_post_records(post_records, channel_id)
+    source_rows = helpers.get_publishing_post_records(post_records, channel_id)
     if not source_rows:
         return
     post_meta, source_sync_channel, workspace = source_rows[0]
@@ -363,7 +363,7 @@ def _handle_message_delete(
     post_records = helpers.get_post_records(ts)
     if not post_records:
         return
-    source_rows = helpers.find_publishing_post_records(post_records, channel_id)
+    source_rows = helpers.get_publishing_post_records(post_records, channel_id)
     if not source_rows:
         return
     post_meta, source_sync_channel, workspace = source_rows[0]
@@ -423,7 +423,7 @@ def _try_handle_reaction_notice_delete(
     if not channel_id or not ts:
         return False
 
-    team_id = helpers.safe_get(body, "team_id") or helpers.safe_get(body, "team", "id")
+    team_id = helpers.get_team_id_from_body(body)
     workspace = helpers.get_workspace_record(team_id, body, context, client) if team_id else None
     if not workspace:
         return False
@@ -435,9 +435,9 @@ def _try_handle_reaction_notice_delete(
     if not sync_channels:
         return False
 
-    from helpers.reaction_notice import find_post_meta_by_channel_ts, tombstone_reaction_notice_locally
+    from helpers.reaction_notice import get_post_meta_by_channel_ts, tombstone_reaction_notice_locally
 
-    notice = find_post_meta_by_channel_ts(sync_channels[0].id, ts)
+    notice = get_post_meta_by_channel_ts(sync_channels[0].id, ts)
     if (
         not notice
         or getattr(notice, "kind", constants.POST_META_KIND_MESSAGE) != constants.POST_META_KIND_REACTION_NOTICE

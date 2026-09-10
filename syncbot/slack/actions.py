@@ -72,11 +72,11 @@ Not ``leave_group_confirm``: that string is prefix-matched onto
 to the modal-opening handler. Destructive confirmations are red in-modal buttons
 (a modal submit button cannot be coloured), so this is a block action."""
 
-CONFIG_ACCEPT_GROUP_REQUEST = "accept_group_request"
-"""Action: user clicked "Accept" on an incoming group join request (prefix-matched with member_id)."""
+CONFIG_ACCEPT_GROUP_INVITE = "accept_group_invite"
+"""Action: user clicked "Accept" on an incoming group invite (prefix-matched with member_id)."""
 
-CONFIG_CANCEL_GROUP_REQUEST = "cancel_group_request"
-"""Action: user clicked "Cancel Request" on an outgoing group join request (prefix-matched with member_id)."""
+CONFIG_CANCEL_GROUP_INVITE = "cancel_group_invite"
+"""Action: user clicked "Cancel Invite" on an outgoing group invite (prefix-matched with member_id)."""
 
 CONFIG_INVITE_WORKSPACE = "invite_workspace"
 """Action: user clicked "Invite Workspace" button on a group (value carries group_id)."""
@@ -87,7 +87,7 @@ CONFIG_INVITE_WORKSPACE_SUBMIT = "invite_workspace_submit"
 CONFIG_INVITE_WORKSPACE_SELECT = "invite_workspace_select"
 """Input: workspace picker dropdown in the invite workspace modal."""
 
-CONFIG_DECLINE_GROUP_REQUEST = "decline_group_request"
+CONFIG_DECLINE_GROUP_INVITE = "decline_group_invite"
 """Action: user clicked "Decline" on an incoming group invite DM (prefix-matched with member_id)."""
 
 CONFIG_PROMOTE_TO_OWNER = "promote_to_owner"

@@ -21,11 +21,7 @@ def handle_leave_group(
 ) -> None:
     """Show a confirmation modal before leaving a workspace group."""
     user_id = helpers.get_user_id_from_body(body)
-    team_id = (
-        helpers.safe_get(body, "team", "id")
-        or helpers.safe_get(body, "view", "team_id")
-        or helpers.safe_get(body, "team_id")
-    )
+    team_id = helpers.get_team_id_from_body(body)
     if not user_id or not team_id or not helpers.is_workspace_manager(client, user_id, team_id):
         _logger.warning("authorization_denied", extra={"user_id": user_id, "action": "leave_group"})
         return
@@ -50,7 +46,7 @@ def handle_leave_group(
         return
 
     workspace_record = helpers.get_workspace_record(
-        helpers.safe_get(body, "team", "id"),
+        team_id,
         body,
         context,
         client,
@@ -145,7 +141,7 @@ def handle_leave_group_confirm(
     from handlers._common import _close_modal_done, _parse_private_metadata
 
     user_id = helpers.get_user_id_from_body(body)
-    team_id = helpers.safe_get(body, "view", "team_id") or helpers.safe_get(body, "team", "id")
+    team_id = helpers.get_team_id_from_body(body)
     if not user_id or not team_id or not helpers.is_workspace_manager(client, user_id, team_id):
         _logger.warning("authorization_denied", extra={"user_id": user_id, "action": "leave_group_confirm"})
         return
@@ -192,7 +188,7 @@ def handle_leave_group_confirm(
         _logger.warning("leave_group_confirm: not a member", extra={"group_id": group_id})
         return
 
-    acting_user_id = helpers.safe_get(body, "user", "id") or user_id
+    acting_user_id = user_id
     _, admin_label = helpers.format_admin_label(client, acting_user_id, workspace_record)
 
     syncs_in_group = DbManager.find_records(schemas.Sync, [schemas.Sync.group_id == group_id])
@@ -611,7 +607,7 @@ def handle_disband_group_confirm(
     from handlers._common import _close_modal_done, _parse_private_metadata
 
     user_id = helpers.get_user_id_from_body(body)
-    team_id = helpers.safe_get(body, "view", "team_id") or helpers.safe_get(body, "team", "id")
+    team_id = helpers.get_team_id_from_body(body)
     if not user_id or not team_id or not helpers.is_workspace_manager(client, user_id, team_id):
         _logger.warning("authorization_denied", extra={"user_id": user_id, "action": "disband_group_confirm"})
         return
@@ -640,7 +636,7 @@ def handle_disband_group_confirm(
         return
     group = groups[0]
 
-    acting_user_id = helpers.safe_get(body, "user", "id") or user_id
+    acting_user_id = user_id
     _, admin_label = helpers.format_admin_label(client, acting_user_id, workspace_record)
 
     # Notify before the teardown, while the membership rows still exist.

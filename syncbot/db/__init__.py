@@ -16,7 +16,6 @@ import logging
 import os
 import ssl
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar
 from urllib.parse import quote_plus
@@ -29,12 +28,6 @@ import constants
 from db.schemas import BaseClass
 
 _logger = logging.getLogger(__name__)
-
-
-@dataclass
-class DatabaseField:
-    name: str
-    value: object = None
 
 
 GLOBAL_ENGINE = None

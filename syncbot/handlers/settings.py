@@ -26,16 +26,6 @@ _BOOL_YES = "true"
 _BOOL_NO = "false"
 
 
-def _team_id_from_body(body: dict) -> str | None:
-    """Resolve the acting team from either a block action or a view submission."""
-    return (
-        helpers.safe_get(body, "view", "team_id")
-        or helpers.safe_get(body, "team", "id")
-        or helpers.safe_get(body, "team_id")
-        or helpers.safe_get(body, "user", "team_id")
-    )
-
-
 def _installed_workspace_options() -> list[orm.SelectorOption]:
     """Every installed workspace, as options keyed by Slack team id."""
     workspaces = DbManager.find_records(schemas.Workspace, [schemas.Workspace.deleted_at.is_(None)])
@@ -172,7 +162,7 @@ def handle_open_settings(
 ) -> None:
     """Open the Settings modal for a workspace admin."""
     user_id = helpers.get_user_id_from_body(body)
-    team_id = _team_id_from_body(body)
+    team_id = helpers.get_team_id_from_body(body)
     if not user_id or not team_id or not helpers.is_workspace_admin(client, user_id):
         _logger.warning("authorization_denied", extra={"user_id": user_id, "action": "open_settings"})
         return
@@ -204,7 +194,7 @@ def handle_settings_submit(
 ) -> None:
     """Persist workspace and (when primary) instance settings."""
     user_id = helpers.get_user_id_from_body(body)
-    team_id = _team_id_from_body(body)
+    team_id = helpers.get_team_id_from_body(body)
     if not user_id or not team_id or not helpers.is_workspace_admin(client, user_id):
         _logger.warning("authorization_denied", extra={"user_id": user_id, "action": "settings_submit"})
         return

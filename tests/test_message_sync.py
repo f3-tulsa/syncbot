@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from helpers.post_meta import get_post_records
-from helpers.sync_participation import find_channel_memberships
+from helpers.sync_participation import get_channel_memberships
 
 
 class TestFindChannelMembershipsDeduplication:
@@ -21,7 +21,7 @@ class TestFindChannelMembershipsDeduplication:
                 return_value=[(sc_dup_a, ws), (sc_dup_b, ws)],
             ),
         ):
-            result = find_channel_memberships("Csource")
+            result = get_channel_memberships("Csource")
 
         assert len(result) == 1
         assert result[0][0] is sc_dup_a
@@ -71,7 +71,7 @@ class TestGetPostRecordsDeduplication:
 
 class TestFindPublishingPostRecords:
     def test_skips_subscribe_only_and_other_channels(self):
-        from helpers.post_meta import find_publishing_post_records
+        from helpers.post_meta import get_publishing_post_records
 
         origin = SimpleNamespace(id=1, post_id="p1")
         copy = SimpleNamespace(id=2, post_id="p1")
@@ -85,6 +85,6 @@ class TestFindPublishingPostRecords:
             (copy, ao, ws),
         ]
 
-        result = find_publishing_post_records(rows, "C_HUB")
+        result = get_publishing_post_records(rows, "C_HUB")
 
         assert result == [(origin, hub_pub, ws)]

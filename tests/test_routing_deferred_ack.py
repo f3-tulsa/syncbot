@@ -24,6 +24,9 @@ _REMOVED_SLACK_IDS = (
     "join_sync_select",
     "manage_user_matching",
     "user_mapping_auto_match",
+    "accept_group_request",
+    "decline_group_request",
+    "cancel_group_request",
 )
 
 

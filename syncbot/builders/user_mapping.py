@@ -13,8 +13,6 @@ from builders._common import (
     _deny_unauthorized,
     _get_group_members,
     _get_groups_for_workspace,
-    _get_team_id,
-    _get_user_id,
 )
 from db import DbManager
 from db.schemas import UserMapping, Workspace, WorkspaceGroup
@@ -246,8 +244,8 @@ def build_user_mapping_entry(
         with contextlib.suppress(TypeError, ValueError):
             group_id = int(raw_value)
 
-    user_id = _get_user_id(body)
-    team_id = _get_team_id(body)
+    user_id = helpers.get_user_id_from_body(body)
+    team_id = helpers.get_team_id_from_body(body)
     trigger_id = helpers.safe_get(body, "trigger_id")
     if not user_id or not team_id or not trigger_id:
         return
@@ -302,7 +300,7 @@ def build_user_mapping_edit_modal(
         _logger.warning(f"build_user_mapping_edit_modal: mapping {mapping_id} not found")
         return
 
-    team_id = _get_team_id(body)
+    team_id = helpers.get_team_id_from_body(body)
     workspace_record = helpers.get_workspace_record(team_id, body, context, client) if team_id else None
     if not workspace_record:
         return

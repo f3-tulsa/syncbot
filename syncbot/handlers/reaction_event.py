@@ -20,19 +20,19 @@ def _sync_reaction_records(body: dict, client: WebClient, reacted_records: list[
     channel_id = item.get("channel")
     event_type = event.get("type")
     action = helpers.ACTION_ADD if event_type == "reaction_added" else helpers.ACTION_REMOVE
-    source_rows = helpers.find_publishing_post_records(reacted_records, channel_id)
+    source_rows = helpers.get_publishing_post_records(reacted_records, channel_id)
     if not source_rows:
         return
     post_meta, source_sync_channel, source_workspace = source_rows[0]
     user_name, user_profile_url = helpers.get_user_info(client, user_id) if user_id else (None, None)
-    people = [helpers.people_entry(user_id, name=user_name, avatar_url=user_profile_url)] if user_id else None
+    people = [helpers.build_people_entry(user_id, name=user_name, avatar_url=user_profile_url)] if user_id else None
     envelope = helpers.build_envelope(
         kind=helpers.KIND_REACTION,
         action=action,
         post_id=str(post_meta.post_id),
         source_channel_id=channel_id,
         source_workspace_id=source_workspace.id,
-        source_team_id=helpers.safe_get(body, "team_id"),
+        source_team_id=helpers.get_team_id_from_body(body),
         source_sync_channel_id=source_sync_channel.id,
         people=people,
         reaction=reaction,
@@ -53,7 +53,7 @@ def _sync_reaction_records(body: dict, client: WebClient, reacted_records: list[
         DbManager.create_records(post_list)
 
 
-def _handle_reaction(
+def handle_reaction(
     body: dict,
     client: WebClient,
     logger: logging.Logger,
@@ -87,7 +87,7 @@ def _handle_reaction(
         )
         return
 
-    team_id = helpers.safe_get(body, "team_id") or helpers.safe_get(body, "team", "id")
+    team_id = helpers.get_team_id_from_body(body)
 
     def _sync_reaction() -> None:
         if team_id and user_id and reaction and channel_id and msg_ts:

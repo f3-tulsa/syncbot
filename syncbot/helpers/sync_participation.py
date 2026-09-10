@@ -16,7 +16,7 @@ def invalidate_channel_memberships(channel_id: str | None) -> None:
         _cache_delete_prefix(f"channel_memberships:{channel_id}:")
 
 
-def participation_flags(value: str | None) -> tuple[bool, bool]:
+def parse_participation_flags(value: str | None) -> tuple[bool, bool]:
     """Map a participation radio value to ``(publishes, subscribes)``.
 
     Leftover ``subscribe_and_publish`` is the same as Publish and Subscribe.
@@ -54,7 +54,7 @@ def channel_subscribes(sync_channel: schemas.SyncChannel | None) -> bool:
     return bool(getattr(sync_channel, "subscribes", True))
 
 
-def find_channel_memberships(
+def get_channel_memberships(
     channel_id: str,
     *,
     active_only: bool = True,
@@ -115,13 +115,13 @@ def origin_publishes_anywhere(channel_id: str) -> bool:
     """True when *channel_id* has at least one active membership with publishes=True."""
     return any(
         channel_publishes(sync_channel)
-        for sync_channel, _workspace in find_channel_memberships(channel_id, active_only=True)
+        for sync_channel, _workspace in get_channel_memberships(channel_id, active_only=True)
     )
 
 
-def find_origin_sync_channel(channel_id: str) -> schemas.SyncChannel | None:
+def get_origin_sync_channel(channel_id: str) -> schemas.SyncChannel | None:
     """Return one publishing SyncChannel for *channel_id*, or None if none publish."""
-    memberships = find_channel_memberships(channel_id, active_only=True)
+    memberships = get_channel_memberships(channel_id, active_only=True)
     for sc, _ws in memberships:
         if channel_publishes(sc):
             return sc
@@ -140,7 +140,7 @@ def iter_publish_targets(
 
     publish_sync_ids: set[int] = set()
     origin_keys: set[tuple[int, str]] = set()
-    for sc, ws in find_channel_memberships(channel_id, active_only=True):
+    for sc, ws in get_channel_memberships(channel_id, active_only=True):
         if not channel_publishes(sc):
             continue
         publish_sync_ids.add(sc.sync_id)

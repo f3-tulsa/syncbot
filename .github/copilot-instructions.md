@@ -34,18 +34,12 @@ Do not show Slack API scope names on **Authorize SyncBot**. Add new user scopes 
 
 ## Gotchas (short)
 
-- Route handlers through `routing.py` only — do not add `@app.action` / `@app.event`. Rename Slack IDs, handlers, and routes together; do not keep leftover IDs. Stale Home may `no_handler` until Refresh. Prefixed Home buttons must not share a prefix with a modal picker (`select_join_sync`, not `join_sync_select`). Leftover env still warn-and-coalesce; old backup keys still import.
-- Inside `helpers/*.py`, import submodules only (`from helpers._cache import …`); never `import helpers`.
-- `DbManager.get_record` uses each model's `get_id()` (for example, `Workspace` → Slack `team_id` and `SyncChannel` → integer primary key). Only positional or `id=`.
-- Federation on/off is `helpers.federation_enabled()` (Settings DB), not env. Leftover `SYNCBOT_FEDERATION_ENABLED` is warned and ignored after a one-time upgrade seed. Leftover `REQUIRE_ADMIN` and `SYNCBOT_INSTANCE_ID` are warned and ignored.
-- `is_workspace_admin` (Slack admin/owner) opens Settings, Backup, Reset, External Connections. `is_workspace_manager` (admin or extra list) configures groups and syncs.
-- Authorize SyncBot stores a target-workspace user token for private-channel invitations, native reactions, and target messages/files as that person; DMs remain bot-authored. Direct reactions use `get_user_token(target_team_id, mapped_user_id)`, never the event team. Never put `xoxp` on federation payloads or store reverse-map results as target token lookup keys. User-token echo uses `remember_user_action` / `take_user_action_echo` inside `run_claimed` (`helpers/user_action_echo.py`). Probe the target emoji name before a Hybrid thread notice in another workspace; same-workspace Hybrid skips the probe. The origin having the emoji does not mean the target has it. Do not use `emoji.list`. Unreact deletes target Hybrid notices; a target user deleting a notice is local only. OAuth tokens encrypt at rest via `EncryptedSQLAlchemyInstallationStore`; never compare two Fernet blobs.
-- Build one source-canonical `kind`/`action` envelope and use `run_sync_pipeline` for messages, threads, edits, deletes, files, and reactions. Origins publish; targets subscribe. Use `iter_publish_targets`, not the removed `get_sync_list`, and dedupe by workspace/channel. Follow-ups stay on the original message's PostMeta records. Copies and federation inbound writes never originate, so there is no second hop. Name helpers with verbs (`build_`, `find_`, `get_`, `_format_`); reuse source/target, origin, PostMeta, post_records, envelope, people, channel_ref.
-- Action buttons and in-channel/DM notices lead with one Slack emoji from `.cursor/rules/85-slack-icons.mdc` (pause `:double_vertical_bar:`, resume `:arrow_forward:`, leave `:octagonal_sign:`, live sync `:arrows_counterclockwise:`). Do not icon form labels, context metadata, or Authorize.
-- Channels may participate in multiple syncs for fan-in. A Channel may be published in more than one group. Reject a second subscription by one workspace to the same published source, but allow a target already used in another sync. Participation controls reaction direction; keep Hybrid, Direct, or Off reaction choices and do not revive reaction-direction action IDs. Off is a no-op for reaction add and remove.
-- User Mapping opens from DB only; Auto Map Now updates the open modal via `view_id` (not Home `views.publish`); do not `users.list` on open/Refresh List/Auto Map Now/join or to fan out Home. On-the-fly author map is one person, email only (`ensure_mapped_target_user_id`).
-- Sync Block Kit from `event.blocks`, not truncated `event.text`. Drop `actions`/`input`. Do not probe target emoji for message bodies.
-- Message-body `#channel` is a source code-tick. Convert Slack `message_mention` to `{type: link}`. Unlabeled permalinks get `message in #channel (Workspace)`; existing link text stays. Never use a target twin, `slack://`, or `app.slack.com/client`.
+- Route handlers through `routing.py` only — do not add `@app.action` / `@app.event`. Rename Slack IDs, handlers, and routes together; do not keep leftover IDs.
+- Inside `helpers/*.py`, import submodules only (`from helpers._cache import …`); never `import helpers`. Callers may use `helpers.X`.
+- Build one source-canonical envelope and use `run_sync_pipeline` / `iter_publish_targets` (not `get_sync_list`).
+- OAuth starts at this instance's `/slack/install`; leftover `SYNCBOT_PUBLIC_URL` is ignored.
+- Sync Block Kit from `event.blocks`; message-body `#channel` stays a source code-tick; unlabeled permalinks get `message in #channel (Workspace)`.
+- See [AGENTS.md](../AGENTS.md) **Common pitfalls** for Hybrid probe, user-token echo, Home push, User Mapping, and participation.
 
 ## Optional: CI parity check
 

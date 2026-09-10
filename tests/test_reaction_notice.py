@@ -5,19 +5,19 @@ from unittest.mock import MagicMock, patch
 
 import constants
 from helpers.reaction_notice import (
+    build_reaction_notice_post_id,
     equivalent_actor_pairs,
-    reaction_notice_post_id,
 )
 
 
 def test_reaction_notice_post_id_stable():
-    a = reaction_notice_post_id(
+    a = build_reaction_notice_post_id(
         parent_post_id="post-1",
         reaction="thumbsup",
         source_user_id="U_A",
         source_workspace_id=1,
     )
-    b = reaction_notice_post_id(
+    b = build_reaction_notice_post_id(
         parent_post_id="post-1",
         reaction="thumbsup",
         source_user_id="U_A",
@@ -28,7 +28,7 @@ def test_reaction_notice_post_id_stable():
 
 
 def test_reaction_notice_post_id_federation_actor_key():
-    fed = reaction_notice_post_id(
+    fed = build_reaction_notice_post_id(
         parent_post_id="post-1",
         reaction="heart",
         source_user_id="U_REMOTE",
@@ -82,7 +82,7 @@ def test_same_channel_apply_skipped():
 
 
 def test_find_notices_for_unreact_matches_one_actor_only():
-    from helpers.reaction_notice import find_notices_for_unreact
+    from helpers.reaction_notice import get_notices_for_unreact
 
     alice = SimpleNamespace(
         source_workspace_id=1,
@@ -95,7 +95,7 @@ def test_find_notices_for_unreact_matches_one_actor_only():
         post_id="rxn-b",
     )
     with patch("helpers.reaction_notice.DbManager.find_records", return_value=[alice, bob]):
-        matched = find_notices_for_unreact(
+        matched = get_notices_for_unreact(
             parent_post_id="post-1",
             reaction="thumbsup",
             sync_channel_id=10,
@@ -105,7 +105,7 @@ def test_find_notices_for_unreact_matches_one_actor_only():
 
 
 def test_find_notices_for_unreact_matches_federation_null_workspace():
-    from helpers.reaction_notice import find_notices_for_unreact
+    from helpers.reaction_notice import get_notices_for_unreact
 
     fed = SimpleNamespace(
         source_workspace_id=None,
@@ -118,7 +118,7 @@ def test_find_notices_for_unreact_matches_federation_null_workspace():
         post_id="rxn-other",
     )
     with patch("helpers.reaction_notice.DbManager.find_records", return_value=[fed, other]):
-        matched = find_notices_for_unreact(
+        matched = get_notices_for_unreact(
             parent_post_id="post-1",
             reaction="thumbsup",
             sync_channel_id=10,
@@ -128,20 +128,20 @@ def test_find_notices_for_unreact_matches_federation_null_workspace():
 
 
 def test_reaction_notice_post_id_shared_across_targets_and_child_parent():
-    parent = reaction_notice_post_id(
+    parent = build_reaction_notice_post_id(
         parent_post_id="post-1",
         reaction="thumbsup",
         source_user_id="U_A",
         source_workspace_id=1,
     )
-    target_b = reaction_notice_post_id(
+    target_b = build_reaction_notice_post_id(
         parent_post_id="post-1",
         reaction="thumbsup",
         source_user_id="U_A",
         source_workspace_id=1,
     )
     assert parent == target_b
-    child = reaction_notice_post_id(
+    child = build_reaction_notice_post_id(
         parent_post_id=parent,
         reaction="heart",
         source_user_id="U_B",
@@ -214,7 +214,7 @@ def test_direct_only_unreact_does_not_scan_leftover_threads():
     client = MagicMock()
     with (
         patch("helpers.reaction_notice.equivalent_actor_pairs", return_value={(1, "U_A")}),
-        patch("helpers.reaction_notice.find_notices_for_unreact", return_value=[]),
+        patch("helpers.reaction_notice.get_notices_for_unreact", return_value=[]),
         patch("helpers.reaction_notice._delete_leftover_thread_notices") as leftover,
     ):
         delete_notices_for_unreact(
@@ -241,7 +241,7 @@ def test_leftover_thread_scan_skipped_when_new_style_rows_exist():
     client = MagicMock()
     with (
         patch("helpers.reaction_notice.equivalent_actor_pairs", return_value={(1, "U_A")}),
-        patch("helpers.reaction_notice.find_notices_for_unreact", return_value=[notice]),
+        patch("helpers.reaction_notice.get_notices_for_unreact", return_value=[notice]),
         patch("helpers.reaction_notice._delete_notice_subtree"),
         patch("helpers.reaction_notice._delete_leftover_thread_notices") as leftover,
     ):
@@ -445,7 +445,7 @@ def test_target_notice_message_deleted_is_local_tombstone_only():
     with (
         patch("handlers.message.helpers.get_workspace_record", return_value=workspace),
         patch("handlers.message.DbManager.find_records", return_value=[sync_channel]),
-        patch("helpers.reaction_notice.find_post_meta_by_channel_ts", return_value=notice),
+        patch("helpers.reaction_notice.get_post_meta_by_channel_ts", return_value=notice),
         patch("helpers.reaction_notice.tombstone_reaction_notice_locally") as tombstone,
         patch("handlers.message._handle_message_delete") as handle_delete,
         patch("handlers.message.helpers.decrypt_bot_token", return_value="xoxb-bot"),
@@ -479,7 +479,7 @@ def test_own_bot_delete_of_missing_notice_does_not_fan_out():
     with (
         patch("handlers.message.helpers.get_workspace_record", return_value=workspace),
         patch("handlers.message.DbManager.find_records", return_value=[sync_channel]),
-        patch("helpers.reaction_notice.find_post_meta_by_channel_ts", return_value=None),
+        patch("helpers.reaction_notice.get_post_meta_by_channel_ts", return_value=None),
         patch("handlers.message._handle_message_delete") as handle_delete,
         patch("handlers.message._is_own_bot_message", return_value=True),
         patch("handlers.message.helpers.parse_mentioned_users", return_value=[]),

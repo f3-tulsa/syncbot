@@ -16,7 +16,7 @@ ACTION_REMOVE = "remove"
 _FOLLOW_UP_ACTIONS = frozenset({ACTION_EDIT, ACTION_DELETE, ACTION_ADD, ACTION_REMOVE})
 
 
-def post_id_for_post_records(envelope: dict[str, Any]) -> str | None:
+def get_post_id_for_post_records(envelope: dict[str, Any]) -> str | None:
     """PostMeta ``post_id`` used to look up ``get_post_records`` for this envelope.
 
     Thread replies and files in a thread use ``thread_post_id``. Edits,
@@ -106,7 +106,7 @@ def build_envelope(
     return envelope
 
 
-def people_entry(
+def build_people_entry(
     user_id: str,
     *,
     name: str | None = None,

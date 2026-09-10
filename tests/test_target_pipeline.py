@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from helpers.envelope import build_envelope, post_id_for_post_records
+from helpers.envelope import build_envelope, get_post_id_for_post_records
 from helpers.slack_write import (
     pick_write_token,
     slack_write_create,
@@ -278,10 +278,10 @@ def test_build_envelope_carries_post_id_and_people():
     assert envelope["source_team_id"] == "T_SOURCE"
     assert envelope["people"] == [{"user_id": "U1", "name": "Ada"}]
     assert envelope["thread_post_id"] == "PARENT"
-    assert post_id_for_post_records(envelope) == "PARENT"
-    assert post_id_for_post_records(_envelope()) is None
-    assert post_id_for_post_records(_envelope(action="edit")) == "P1"
-    assert post_id_for_post_records(_envelope(kind="reaction", action="add", reaction="eyes")) == "P1"
+    assert get_post_id_for_post_records(envelope) == "PARENT"
+    assert get_post_id_for_post_records(_envelope()) is None
+    assert get_post_id_for_post_records(_envelope(action="edit")) == "P1"
+    assert get_post_id_for_post_records(_envelope(kind="reaction", action="add", reaction="eyes")) == "P1"
 
 
 def test_apply_target_does_not_unthread_a_reply():

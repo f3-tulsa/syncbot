@@ -9,8 +9,7 @@ import constants
 from helpers.reaction import (
     apply_reaction_to_target,
     default_reaction_style_for_new_channel,
-    find_source_sync_channel,
-    reaction_style,
+    get_reaction_style,
 )
 from slack import actions
 
@@ -73,11 +72,11 @@ class TestDefaults:
 
     def test_existing_null_style_is_hybrid_when_receiving(self):
         existing = _sync_channel(constants.REACTION_DIRECTION_BOTH, None)
-        assert reaction_style(existing) == constants.DEFAULT_REACTION_STYLE_EXISTING
+        assert get_reaction_style(existing) == constants.DEFAULT_REACTION_STYLE_EXISTING
 
     def test_stored_off_is_not_coerced_to_hybrid(self):
         existing = _sync_channel(constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_OFF)
-        assert reaction_style(existing) == constants.REACTION_STYLE_OFF
+        assert get_reaction_style(existing) == constants.REACTION_STYLE_OFF
 
 
 class TestSkipOrigin:
@@ -85,7 +84,11 @@ class TestSkipOrigin:
         source = _sync_channel(constants.REACTION_DIRECTION_BOTH, channel_id="C_SRC")
         other = _sync_channel(constants.REACTION_DIRECTION_BOTH, channel_id="C_TGT")
         records = [(None, source, None), (None, other, None)]
-        assert find_source_sync_channel(records, "C_SRC") is source
+        matched = next(
+            (sync_channel for _pm, sync_channel, _ws in records if sync_channel.channel_id == "C_SRC"),
+            None,
+        )
+        assert matched is source
 
     def test_sync_does_not_apply_on_origin_channel(self):
         from handlers.reaction_event import _sync_reaction_records
@@ -111,7 +114,7 @@ class TestSkipOrigin:
         ]
 
         with (
-            patch("handlers.reaction_event.helpers.find_origin_sync_channel", return_value=source),
+            patch("handlers.reaction_event.helpers.get_origin_sync_channel", return_value=source),
             patch("handlers.reaction_event.helpers.get_user_info", return_value=("Alice", None)),
             patch("handlers.reaction_event.helpers.resolve_workspace_name", return_value="A"),
             patch("handlers.reaction_event.helpers.run_sync_pipeline", return_value=[]) as pipeline,
@@ -677,7 +680,7 @@ class TestApplyDirect:
             patch("helpers.reaction.decrypt_bot_token", return_value="xoxb-bot"),
             patch("helpers.reaction.WebClient", return_value=bot_client),
             patch("helpers.reaction_notice.equivalent_actor_pairs", return_value={(1, "U_SRC")}),
-            patch("helpers.reaction_notice.find_notices_for_unreact", return_value=[notice]),
+            patch("helpers.reaction_notice.get_notices_for_unreact", return_value=[notice]),
             patch("helpers.reaction_notice._child_notices_on_channel", return_value=[]),
             patch("helpers.reaction_notice.DbManager.delete_records"),
         ):

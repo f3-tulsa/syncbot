@@ -23,7 +23,7 @@ from db.event_claims import (  # noqa: E402
 )
 from db.schemas import ProcessedEvent  # noqa: E402
 from handlers.message import respond_to_message_event  # noqa: E402
-from handlers.reaction_event import _handle_reaction  # noqa: E402
+from handlers.reaction_event import handle_reaction  # noqa: E402
 
 
 @pytest.fixture
@@ -193,7 +193,7 @@ class TestRespondToMessageEventDedup:
         body = _message_body()
         client = MagicMock()
         logger = MagicMock()
-        context = {"slack_retry_num": 1}
+        context = {}
 
         with (
             patch("handlers.message._is_own_bot_message", return_value=False),
@@ -201,7 +201,7 @@ class TestRespondToMessageEventDedup:
             patch("handlers.message._build_file_context", return_value=([], [])),
         ):
             respond_to_message_event(body, client, logger, context)
-            respond_to_message_event(body, client, logger, {**context, "slack_retry_num": 2})
+            respond_to_message_event(body, client, logger, {})
 
         mock_new.assert_called_once()
 
@@ -223,7 +223,7 @@ class TestRespondToMessageEventDedup:
         ):
             with pytest.raises(RuntimeError, match="sync failed"):
                 respond_to_message_event(body, client, logger, {})
-            respond_to_message_event(body, client, logger, {"slack_retry_num": 1})
+            respond_to_message_event(body, client, logger, {})
 
         assert calls["n"] == 2
 
@@ -313,7 +313,7 @@ class TestHandleReactionClaim:
         body = self._reaction_body()
         body["event"]["type"] = "reaction_removed"
         with patch("handlers.reaction_event.run_claimed") as mock_run:
-            _handle_reaction(body, MagicMock(), MagicMock(), {})
+            handle_reaction(body, MagicMock(), MagicMock(), {})
         mock_run.assert_not_called()
 
     def test_reaction_without_post_meta_does_not_claim(self, event_db):
@@ -323,7 +323,7 @@ class TestHandleReactionClaim:
             patch("handlers.reaction_event.helpers.get_post_records", return_value=[]),
             patch("handlers.reaction_event.run_claimed") as mock_run,
         ):
-            _handle_reaction(body, MagicMock(), MagicMock(), {})
+            handle_reaction(body, MagicMock(), MagicMock(), {})
         mock_run.assert_not_called()
 
     def test_reaction_added_claims_before_side_effects(self, event_db):
@@ -334,7 +334,7 @@ class TestHandleReactionClaim:
             patch("handlers.reaction_event.helpers.get_post_records", return_value=records),
             patch("handlers.reaction_event.run_claimed") as mock_run,
         ):
-            _handle_reaction(body, MagicMock(), MagicMock(), {})
+            handle_reaction(body, MagicMock(), MagicMock(), {})
         mock_run.assert_called_once()
 
     def test_duplicate_reaction_event_id_skips_second_sync(self, event_db):
@@ -345,8 +345,8 @@ class TestHandleReactionClaim:
             patch("handlers.reaction_event.helpers.get_post_records", return_value=records),
             patch("handlers.reaction_event._sync_reaction_records") as mock_sync,
         ):
-            _handle_reaction(body, MagicMock(), MagicMock(), {})
-            _handle_reaction(body, MagicMock(), MagicMock(), {})
+            handle_reaction(body, MagicMock(), MagicMock(), {})
+            handle_reaction(body, MagicMock(), MagicMock(), {})
         mock_sync.assert_called_once()
 
 
@@ -369,7 +369,7 @@ class TestHandleReactionEchoSkip:
             patch("handlers.reaction_event.helpers.take_user_action_echo", return_value=True) as take_mock,
             patch("handlers.reaction_event._sync_reaction_records") as sync_mock,
         ):
-            _handle_reaction(body, MagicMock(), MagicMock(), {})
+            handle_reaction(body, MagicMock(), MagicMock(), {})
 
         take_mock.assert_called_once()
         sync_mock.assert_not_called()
@@ -392,7 +392,7 @@ class TestHandleReactionEchoSkip:
             patch("handlers.reaction_event.helpers.take_user_action_echo", return_value=False),
             patch("handlers.reaction_event._sync_reaction_records") as sync_mock,
         ):
-            _handle_reaction(body, MagicMock(), MagicMock(), {})
+            handle_reaction(body, MagicMock(), MagicMock(), {})
 
         sync_mock.assert_called_once()
 
@@ -414,7 +414,7 @@ class TestHandleReactionEchoSkip:
             patch("handlers.reaction_event.helpers.take_user_action_echo", return_value=True),
             patch("handlers.reaction_event._sync_reaction_records") as sync_mock,
         ):
-            _handle_reaction(body, MagicMock(), MagicMock(), {})
-            _handle_reaction(body, MagicMock(), MagicMock(), {})
+            handle_reaction(body, MagicMock(), MagicMock(), {})
+            handle_reaction(body, MagicMock(), MagicMock(), {})
 
         sync_mock.assert_not_called()

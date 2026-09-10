@@ -16,7 +16,7 @@ from helpers.envelope import (
     KIND_MESSAGE,
     KIND_REACTION,
 )
-from helpers.post_meta import target_post_meta_for
+from helpers.post_meta import get_target_post_meta
 from helpers.slack_write import slack_write_create, slack_write_delete, slack_write_edit
 from helpers.sync_participation import channel_subscribes
 
@@ -76,7 +76,7 @@ def apply_target(
         return created
 
     if kind == KIND_MESSAGE and action == ACTION_EDIT:
-        meta = target_post_meta or target_post_meta_for(str(post_id), sync_channel)
+        meta = target_post_meta or get_target_post_meta(str(post_id), sync_channel)
         if not meta:
             return []
         slack_write_edit(
@@ -89,7 +89,7 @@ def apply_target(
         return []
 
     if kind == KIND_MESSAGE and action == ACTION_DELETE:
-        meta = target_post_meta or target_post_meta_for(str(post_id), sync_channel)
+        meta = target_post_meta or get_target_post_meta(str(post_id), sync_channel)
         if not meta:
             return []
         slack_write_delete(sync_channel=sync_channel, workspace=workspace, target_post_meta=meta)
@@ -98,7 +98,7 @@ def apply_target(
     if kind == KIND_REACTION and action in (ACTION_ADD, ACTION_REMOVE):
         from helpers.reaction import apply_reaction_to_target
 
-        meta = target_post_meta or target_post_meta_for(str(post_id), sync_channel)
+        meta = target_post_meta or get_target_post_meta(str(post_id), sync_channel)
         if not meta or source_sync_channel is None:
             return []
         mapped_user_id = envelope.get("mapped_user_id")

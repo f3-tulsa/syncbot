@@ -30,7 +30,7 @@ def handle_tokens_revoked(
     fails ``auth.test``. Bolt's ``enable_token_revocation_listeners()`` would
     delete the bot whenever ``tokens.bot`` is present, which blanks Home.
     """
-    team_id = helpers.safe_get(body, "team_id")
+    team_id = helpers.get_team_id_from_body(body)
     if not team_id:
         _logger.warning("handle_tokens_revoked: missing team_id")
         return
@@ -69,7 +69,7 @@ def handle_app_uninstalled(
     This is the event Bolt's built-in listener uses for a workspace uninstall.
     We call the same store method, then pause groups and channel syncs.
     """
-    team_id = helpers.safe_get(body, "team_id")
+    team_id = helpers.get_team_id_from_body(body)
     if not team_id:
         _logger.warning("handle_app_uninstalled: missing team_id")
         return

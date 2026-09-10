@@ -84,7 +84,6 @@ DEFAULT_FEDERATION_ENABLED = False
 REACTION_DIRECTION_BOTH = "both"
 REACTION_DIRECTION_SEND = "send"
 REACTION_DIRECTION_RECEIVE = "receive"
-REACTION_DIRECTION_OFF = "off"
 
 # Per-channel reaction type while the channel subscribes.
 REACTION_STYLE_DIRECT_ONLY = "direct_only"
@@ -128,7 +127,6 @@ WARNING_BLOCK = "WARNING_BLOCK"
 USER_MAP_TTL_EMAIL = 30 * 24 * 3600  # 30 days for email-confirmed mappings
 USER_MAP_TTL_NAME = 14 * 24 * 3600  # 14 days for name-based mappings
 USER_MAP_TTL_NONE = 90 * 24 * 3600  # 90 days for no-map (team_join handles re-checks)
-USER_DIR_REFRESH_TTL = 24 * 3600  # 24 hours per workspace directory refresh
 USER_MAPPING_PAGE_SIZE = 20  # max mapping rows per modal page (Slack 100-block cap)
 
 # Refresh button cooldown (seconds) when content hash unchanged

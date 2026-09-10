@@ -3,7 +3,7 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from helpers.core import format_file_share_notice, synced_from_line_username
+from helpers.core import format_file_share_notice, format_synced_from_line
 from helpers.slack_write import slack_write_create
 from tests.event_fixtures import make_event_context
 
@@ -30,13 +30,13 @@ def _write(ctx, direct_files, *, user_name="Ada", thread_ts=None):
 
 class TestFromLineUsername:
     def test_mapped_is_display_name_only(self):
-        assert synced_from_line_username("Ada Lovelace") == "Ada Lovelace"
+        assert format_synced_from_line("Ada Lovelace") == "Ada Lovelace"
 
     def test_unmapped_includes_workspace(self):
-        assert synced_from_line_username("Ada Lovelace", "Workspace A") == "Ada Lovelace (Workspace A)"
+        assert format_synced_from_line("Ada Lovelace", "Workspace A") == "Ada Lovelace (Workspace A)"
 
     def test_blank_falls_back_to_someone(self):
-        assert synced_from_line_username("  ", None) == "Someone"
+        assert format_synced_from_line("  ", None) == "Someone"
 
     def test_file_share_notice_never_tags(self):
         assert format_file_share_notice("Ada Lovelace") == "`Ada Lovelace` shared a file"
@@ -44,10 +44,10 @@ class TestFromLineUsername:
 
     def test_code_ticked_matches_file_share_and_unmapped_mentions(self):
         from helpers.core import code_ticked_display_name
-        from helpers.user_map import unmapped_author_label
+        from helpers.user_map import format_unmapped_author_label
 
         assert code_ticked_display_name("F3 Tulsa - TEST", "F3 T-Town Test") == "`F3 Tulsa - TEST (F3 T-Town Test)`"
-        assert unmapped_author_label("F3 Tulsa - TEST", "F3 T-Town Test") == "`F3 Tulsa - TEST (F3 T-Town Test)`"
+        assert format_unmapped_author_label("F3 Tulsa - TEST", "F3 T-Town Test") == "`F3 Tulsa - TEST (F3 T-Town Test)`"
         assert "@" not in code_ticked_display_name("Ada", "WS")
         assert "[" not in code_ticked_display_name("Ada", "WS")
 

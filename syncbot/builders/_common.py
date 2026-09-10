@@ -7,28 +7,13 @@ from slack_sdk.web import WebClient
 import helpers
 from db import DbManager
 from db.schemas import Workspace, WorkspaceGroup, WorkspaceGroupMember
-from helpers import get_user_id_from_body, is_workspace_manager, safe_get
+from helpers import get_team_id_from_body, get_user_id_from_body, is_workspace_manager, safe_get
 
 _logger = logging.getLogger(__name__)
 
 
-def _get_user_id(body: dict) -> str | None:
-    """Extract the acting user ID from any Slack request body."""
-    return safe_get(body, "event", "user") or safe_get(body, "user", "id") or safe_get(body, "user_id")
-
-
-def _get_team_id(body: dict) -> str | None:
-    """Extract the team ID from any Slack request body."""
-    return (
-        safe_get(body, "view", "team_id")
-        or safe_get(body, "team_id")
-        or safe_get(body, "team", "id")
-        or safe_get(body, "event", "view", "team_id")
-    )
-
-
 def _deny_unauthorized(body: dict, client: WebClient, logger) -> bool:
-    """Check authorization and send an ephemeral denial if the user is not an admin.
+    """Check authorization and send an ephemeral denial if the user is not a manager.
 
     Returns *True* if the user was denied (caller should return early).
     """
@@ -37,7 +22,7 @@ def _deny_unauthorized(body: dict, client: WebClient, logger) -> bool:
         logger.warning("authorization_denied: could not determine user_id from request body")
         return True
 
-    team_id = _get_team_id(body)
+    team_id = get_team_id_from_body(body)
     if is_workspace_manager(client, user_id, team_id):
         return False
 
