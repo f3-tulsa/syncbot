@@ -128,10 +128,12 @@ def release_event(team_id: str, event_id: str) -> None:
         close_session(session)
 
 
-def run_claimed(body: dict, work: Callable[[], None]) -> None:
+def run_claimed(body: dict, work: Callable[[], object]) -> None:
     """Run *work* once per Slack ``event_id``. Skip duplicates; release on failure.
 
-    If ``event_id`` is missing, *work* always runs (local fixtures).
+    If ``event_id`` is missing, *work* always runs (local fixtures). Return
+    ``False`` from *work* to release the claim so Slack can retry (not ready
+    yet). Any other return completes the claim.
     """
     ident = slack_event_identity(body)
     if ident is None:
@@ -145,7 +147,10 @@ def run_claimed(body: dict, work: Callable[[], None]) -> None:
         )
         return
     try:
-        work()
+        ready = work()
+        if ready is False:
+            release_event(team_id, event_id)
+            return
         complete_event(team_id, event_id)
     except Exception:
         release_event(team_id, event_id)

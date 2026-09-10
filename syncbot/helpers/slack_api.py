@@ -56,12 +56,14 @@ def slack_retry(fn):
 def _users_info(client: WebClient, user_id: str) -> dict:
     """``users.info`` with retry and a token-keyed process cache."""
     fingerprint = _token_fingerprint(client)
-    cache_key = f"users_info_raw:{fingerprint}:{user_id}" if fingerprint else f"users_info_raw:{user_id}"
-    cached = _cache_get(cache_key)
-    if cached is not None:
-        return cached
+    cache_key = f"users_info_raw:{fingerprint}:{user_id}" if fingerprint else None
+    if cache_key:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached
     res = client.users_info(user=user_id)
-    _cache_set(cache_key, res, ttl=_USER_INFO_CACHE_TTL)
+    if cache_key:
+        _cache_set(cache_key, res, ttl=_USER_INFO_CACHE_TTL)
     return res
 
 

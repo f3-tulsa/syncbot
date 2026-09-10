@@ -19,6 +19,7 @@ from db.event_claims import (  # noqa: E402
     claim_event,
     complete_event,
     release_event,
+    run_claimed,
     slack_event_identity,
 )
 from db.schemas import ProcessedEvent  # noqa: E402
@@ -134,6 +135,18 @@ class TestClaimHelpers:
             t.join()
         assert results.count(True) == 1
         assert results.count(False) == 1
+
+    def test_work_returning_false_releases_claim(self, event_db):
+        calls: list[int] = []
+
+        def work() -> bool:
+            calls.append(1)
+            return False
+
+        body = {"event_id": "EvNotReady", "team_id": "T001"}
+        run_claimed(body, work)
+        run_claimed(body, work)
+        assert calls == [1, 1]
 
 
 class TestRespondToMessageEventDedup:
@@ -356,14 +369,29 @@ class TestHandleReactionClaim:
             handle_reaction(body, MagicMock(), MagicMock(), {})
         mock_run.assert_called_once()
 
-    def test_reaction_without_post_meta_still_claims(self, event_db):
+    def test_reaction_without_post_meta_releases_claim_for_retry(self, event_db):
         body = self._reaction_body()
+        records = [(MagicMock(), MagicMock(), MagicMock())]
         with (
             patch("handlers.reaction_event.helpers.get_own_bot_user_id", return_value="UBOT"),
-            patch("handlers.reaction_event.helpers.get_post_records", return_value=[]),
+            patch("handlers.reaction_event.helpers.get_post_records", side_effect=[[], records]),
             patch("handlers.reaction_event._sync_reaction_records") as mock_sync,
         ):
             handle_reaction(body, MagicMock(), MagicMock(), {})
+            handle_reaction(body, MagicMock(), MagicMock(), {})
+        mock_sync.assert_called_once()
+
+    def test_unconfigured_channel_skips_post_meta_and_completes_claim(self, event_db):
+        body = self._reaction_body()
+        with (
+            patch("handlers.reaction_event.helpers.get_own_bot_user_id", return_value="UBOT"),
+            patch("helpers.channel_has_membership", return_value=False),
+            patch("handlers.reaction_event.helpers.get_post_records") as post_meta,
+            patch("handlers.reaction_event._sync_reaction_records") as mock_sync,
+        ):
+            handle_reaction(body, MagicMock(), MagicMock(), {})
+            handle_reaction(body, MagicMock(), MagicMock(), {})
+        post_meta.assert_not_called()
         mock_sync.assert_not_called()
 
     def test_reaction_added_claims_before_side_effects(self, event_db):

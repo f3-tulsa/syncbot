@@ -14,6 +14,7 @@ from helpers.sync_participation import (
     channel_has_membership,
     channel_subscribes,
     get_origin_sync_channel,
+    invalidate_channel_memberships,
     iter_publish_targets,
     origin_publishes_anywhere,
     parse_participation_flags,
@@ -124,6 +125,19 @@ def test_publish_and_subscribe_receives(real_db):
     _channel(sync, b, "C_B", publishes=True, subscribes=True)
 
     assert _target_ids("C_A") == ["C_B"]
+
+
+def test_pause_invalidates_cached_publish_targets(real_db):
+    a, b = _workspace("T_A"), _workspace("T_B")
+    sync = _sync(a, "live")
+    _channel(sync, a, "C_A", publishes=True, subscribes=False)
+    b_channel = _channel(sync, b, "C_B", publishes=False, subscribes=True)
+
+    assert _target_ids("C_A") == ["C_B"]
+    DbManager.update_record(schemas.SyncChannel, b_channel.id, {"status": "paused"})
+    assert _target_ids("C_A") == ["C_B"]
+    invalidate_channel_memberships("C_A")
+    assert _target_ids("C_A") == []
 
 
 def test_two_publishers_fan_into_one_subscriber_without_cross_posts(real_db):

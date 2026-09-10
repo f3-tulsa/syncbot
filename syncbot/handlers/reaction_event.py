@@ -97,7 +97,8 @@ def handle_reaction(
                 "reaction_no_post_meta",
                 extra={"msg_ts": msg_ts, "channel_id": channel_id, "float_ts": float(msg_ts)},
             )
-            return
+            # Message PostMeta may still be in flight; do not complete the claim.
+            return False
         _sync_reaction_records(body, client, reacted_records)
 
     run_claimed(body, _sync_reaction)
