@@ -249,8 +249,6 @@ def post_message(
             "icon_url": user_profile_url,
             "thread_ts": thread_ts,
             "blocks": all_blocks,
-            # Source permalinks must not unfurl as target messages. This does not
-            # change Slack web treating archives/p URLs as the target (Private chip).
             "unfurl_links": False,
             "unfurl_media": False,
         }

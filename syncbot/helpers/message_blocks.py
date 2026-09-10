@@ -245,7 +245,7 @@ def _rich_text_elements_to_str(elements: list) -> str:
         elif etype == "channel":
             cid = el.get("channel_id")
             parts.append(f"<#{cid}>" if cid else "")
-        elif etype == "link":
+        elif etype in {"link", "message_mention"}:
             url = el.get("url") or ""
             label = el.get("text") or url
             parts.append(f"<{url}|{label}>" if label and label != url else url)
@@ -267,32 +267,82 @@ def _rich_text_elements_to_str(elements: list) -> str:
 
 
 _MRKDWN_LINK = re.compile(r"^<([^<>|]+)\|([^>]+)>$")
+_MRKDWN_LINK_SPAN = re.compile(r"<([^<>|\s]+)\|([^<>]+)>")
 _MRKDWN_CODE = re.compile(r"^`([^`]+)`$")
 
 
-def _rich_text_from_mrkdwn_span(mrkdwn: str, *, style: dict | None = None) -> dict:
-    """Turn ``resolve_channel_references`` output into a rich_text element.
+def is_url_display_text(display: str, url: str) -> bool:
+    """True when link text is Slack's URL rendering, not author-chosen words."""
+    shown = display.strip().rstrip("…").rstrip("/")
+    if not shown:
+        return True
+    bare = url.strip().removeprefix("https://").removeprefix("http://")
+    shown = shown.removeprefix("https://").removeprefix("http://")
+    return ("/" in shown or "." in shown) and bare.lower().startswith(shown.lower())
 
-    Labeled permalinks become ``type: link`` (do not leave mrkdwn ``<url|label>``
-    in a text node). Channel ticks and unmapped people become ``style.code``. Slack web still chips
-    ``archives/C…/p…`` as the target; mobile opens the source URL.
-    """
+
+def _text_element(text: str, style: dict | None) -> dict:
+    out: dict = {"type": "text", "text": text}
+    if style:
+        out["style"] = style
+    return out
+
+
+def _link_element(url: str, text: str, style: dict | None) -> dict:
+    out: dict = {"type": "link", "url": url, "text": text}
+    if style:
+        out["style"] = style
+    return out
+
+
+def _rewrite_link(
+    url: str,
+    display: str,
+    rewrite_mrkdwn: Callable[[str], str],
+    style: dict | None,
+) -> dict | None:
+    """Rebuild a rich_text ``link`` or ``message_mention`` as a target ``link``."""
+    labeled = _MRKDWN_LINK.fullmatch((display or "").strip())
+    if labeled:
+        url = url or labeled.group(1)
+        display = labeled.group(2)
+    if not url:
+        return None
+    if is_url_display_text(display, url):
+        rewritten = rewrite_mrkdwn(url)
+        if rewritten != url:
+            return _rich_text_from_mrkdwn_span(rewritten, style=style)
+    return _link_element(url, display or url, style)
+
+
+def _rich_text_from_mixed_text(text: str, style: dict | None = None) -> dict | list[dict]:
+    """Split ``<url|label>`` mrkdwn out of a rich_text text node into real link elements."""
+    parts: list[dict] = []
+    pos = 0
+    for match in _MRKDWN_LINK_SPAN.finditer(text):
+        if match.start() > pos:
+            parts.append(_text_element(text[pos : match.start()], style))
+        parts.append(_link_element(match.group(1), match.group(2), style))
+        pos = match.end()
+    if not parts:
+        return _text_element(text, style)
+    if pos < len(text):
+        parts.append(_text_element(text[pos:], style))
+    return parts
+
+
+def _rich_text_from_mrkdwn_span(mrkdwn: str, *, style: dict | None = None) -> dict:
+    """Turn ``resolve_channel_references`` output into a rich_text ``link`` or code-ticked text."""
     s = (mrkdwn or "").strip()
     m = _MRKDWN_LINK.fullmatch(s)
     if m:
-        out: dict = {"type": "link", "url": m.group(1), "text": m.group(2)}
-        if style:
-            out["style"] = style
-        return out
+        return _link_element(m.group(1), m.group(2), style)
     code = _MRKDWN_CODE.fullmatch(s)
     if code:
         merged = dict(style or {})
         merged["code"] = True
         return {"type": "text", "text": code.group(1), "style": merged}
-    out = {"type": "text", "text": mrkdwn}
-    if style:
-        out["style"] = style
-    return out
+    return _text_element(mrkdwn, style)
 
 
 def _emoji_to_str(el: dict) -> str:
@@ -313,7 +363,14 @@ def _rewrite_node(
     unmapped_user_label: Callable[[str], str],
 ) -> object:
     if isinstance(node, list):
-        return [_rewrite_node(i, rewrite_mrkdwn, map_user_id, unmapped_user_label) for i in node]
+        out_list: list = []
+        for item in node:
+            rewritten_item = _rewrite_node(item, rewrite_mrkdwn, map_user_id, unmapped_user_label)
+            if isinstance(rewritten_item, list):
+                out_list.extend(rewritten_item)
+            else:
+                out_list.append(rewritten_item)
+        return out_list
     if not isinstance(node, dict):
         return node
     if node.get("type") == "user" and node.get("user_id"):
@@ -331,13 +388,18 @@ def _rewrite_node(
             rewrite_mrkdwn(f"<#{node['channel_id']}>"),
             style=node.get("style") if isinstance(node.get("style"), dict) else None,
         )
-    if node.get("type") == "link" and isinstance(node.get("url"), str):
-        rewritten = rewrite_mrkdwn(node["url"])
-        if rewritten != node["url"]:
-            return _rich_text_from_mrkdwn_span(
-                rewritten,
-                style=node.get("style") if isinstance(node.get("style"), dict) else None,
-            )
+    style = node.get("style") if isinstance(node.get("style"), dict) else None
+    if node.get("type") in {"link", "message_mention"}:
+        url = node["url"] if isinstance(node.get("url"), str) else ""
+        display = node["text"] if isinstance(node.get("text"), str) else ""
+        rewritten = _rewrite_link(url, display, rewrite_mrkdwn, style)
+        if rewritten:
+            return rewritten
+        cid = node.get("channel_id")
+        if node.get("type") == "message_mention" and isinstance(cid, str) and cid:
+            return _rich_text_from_mrkdwn_span(rewrite_mrkdwn(f"<#{cid}>"), style=style)
+    if node.get("type") == "text" and isinstance(node.get("text"), str):
+        return _rich_text_from_mixed_text(rewrite_mrkdwn(node["text"]), style=style)
     out: dict = {}
     for key, val in node.items():
         if key == "text" and isinstance(val, str):
