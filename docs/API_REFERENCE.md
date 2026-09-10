@@ -37,7 +37,7 @@ When a channel sync includes a federated workspace, this instance POSTs to the p
 
 | Event | Handler | Description |
 |-------|---------|-------------|
-| `app_home_opened` | `handle_app_home_opened` | Publishes the Home tab with workspace groups, channel syncs, and user mapping. |
+| `app_home_opened` | `handle_app_home_opened` | Publishes the Home tab with workspace groups, channel syncs, and user mapping. When the per-user content hash is unchanged, republishes the cached blocks instead of rebuilding. |
 | `app_uninstalled` | `handle_app_uninstalled` | Workspace uninstall: Bolt `InstallationStore.delete_all` (bot + every user install row), then pause groups and channel syncs. |
 | `member_joined_channel` | `handle_member_joined_channel` | Detects when SyncBot is added to an unconfigured channel; posts a message and leaves. |
 | `message.channels` / `message.groups` | `respond_to_message_event` | Fires on new messages, thread broadcasts, `/me`, edits, deletes, and file shares in public/private channels. |

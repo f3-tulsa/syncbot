@@ -492,27 +492,9 @@ def respond_to_message_event(
     if event_type != "message":
         return
 
-    if event_subtype == "message_deleted" and _try_handle_reaction_notice_delete(body, client, context, ctx):
-        return
-
-    # Skip messages from SyncBot itself to prevent infinite sync loops.
-    # Messages from OTHER bots are synced normally.
-    if _is_own_bot_message(body, client, context):
-        return
-
-    # Slack sends a plain message event and then a file_share for the same post; process only file_share
-    # so we do not sync twice (and avoid downloading files twice). thread_broadcast carries files on
-    # the same event — do not wait for a second file_share.
     event_has_files = bool(
         helpers.safe_get(body, "event", "files") or helpers.safe_get(body, "event", "message", "files")
     )
-    if not event_subtype and event_has_files:
-        _logger.debug(
-            "skip_message_pending_file_share",
-            extra={"channel": helpers.safe_get(body, "event", "channel")},
-        )
-        return
-
     _SYNCED_SUBTYPES = frozenset(
         {
             None,
@@ -525,14 +507,33 @@ def respond_to_message_event(
             "message_deleted",
         }
     )
-    if event_subtype not in _SYNCED_SUBTYPES:
-        _logger.info(
-            "unhandled_message_subtype",
-            extra={"subtype": event_subtype, "channel": helpers.safe_get(body, "event", "channel")},
-        )
-        return
 
     def _sync_message() -> None:
+        if event_subtype == "message_deleted" and _try_handle_reaction_notice_delete(body, client, context, ctx):
+            return
+
+        # Skip messages from SyncBot itself to prevent infinite sync loops.
+        # Messages from OTHER bots are synced normally.
+        if _is_own_bot_message(body, client, context):
+            return
+
+        # Slack sends a plain message event and then a file_share for the same post; process only file_share
+        # so we do not sync twice (and avoid downloading files twice). thread_broadcast carries files on
+        # the same event — do not wait for a second file_share.
+        if not event_subtype and event_has_files:
+            _logger.debug(
+                "skip_message_pending_file_share",
+                extra={"channel": helpers.safe_get(body, "event", "channel")},
+            )
+            return
+
+        if event_subtype not in _SYNCED_SUBTYPES:
+            _logger.info(
+                "unhandled_message_subtype",
+                extra={"subtype": event_subtype, "channel": helpers.safe_get(body, "event", "channel")},
+            )
+            return
+
         channel_id = ctx.get("channel_id")
         user_id = ctx.get("user_id")
         ts = ctx.get("ts")

@@ -165,7 +165,7 @@ class TestRespondToMessageEventDedup:
         mock_new.assert_called_once()
 
     def test_no_subtype_with_files_skips_without_building_file_context(self):
-        body = _message_body()
+        body = _message_body(event_id="")
         body["event"]["files"] = [{"id": "F1", "mimetype": "image/jpeg"}]
 
         client = MagicMock()
@@ -179,6 +179,21 @@ class TestRespondToMessageEventDedup:
         ):
             respond_to_message_event(body, client, logger, context)
 
+        mock_new.assert_not_called()
+        build_fc.assert_not_called()
+
+    def test_pending_file_share_completes_claim_so_retry_is_noop(self, event_db):
+        body = _message_body()
+        body["event"]["files"] = [{"id": "F1", "mimetype": "image/jpeg"}]
+        with (
+            patch("handlers.message._is_own_bot_message", return_value=False) as own_bot,
+            patch("handlers.message._handle_new_post") as mock_new,
+            patch("handlers.message._build_file_context") as build_fc,
+        ):
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+
+        own_bot.assert_called_once()
         mock_new.assert_not_called()
         build_fc.assert_not_called()
 
