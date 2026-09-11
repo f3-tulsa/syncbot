@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from slack_sdk import WebClient
 
-from db import schemas
+from db import DbManager, schemas
 from helpers.envelope import (
     ACTION_ADD,
     ACTION_CREATE,
@@ -18,7 +19,11 @@ from helpers.envelope import (
 )
 from helpers.post_meta import get_target_post_meta
 from helpers.slack_write import slack_write_create, slack_write_delete, slack_write_edit
-from helpers.sync_participation import channel_subscribes
+from helpers.sync_participation import channel_subscribes, get_live_sync_channel
+from helpers.user_action_echo import post_meta_ts
+from logger import log_sync
+
+_logger = logging.getLogger(__name__)
 
 
 def apply_target(
@@ -33,8 +38,10 @@ def apply_target(
     name_probe_cache: dict | None = None,
 ) -> list[schemas.PostMeta]:
     """Apply *envelope* to one target. Returns new PostMeta rows (if any)."""
-    if not channel_subscribes(sync_channel):
+    live = get_live_sync_channel(sync_channel)
+    if not live or not channel_subscribes(live):
         return []
+    sync_channel = live
 
     kind = envelope.get("kind")
     action = envelope.get("action")
@@ -51,12 +58,30 @@ def apply_target(
             source_client=source_client,
             thread_ts=thread_ts,
         )
+        log_sync(
+            "apply_create",
+            channel_id=sync_channel.channel_id,
+            ts=ts,
+            split_ts=split_ts,
+            thread_ts=thread_ts,
+            post_id=post_id,
+            file_count=len(envelope.get("file_refs") or []),
+        )
+        if not ts and (envelope.get("file_refs") or envelope.get("thread_post_id")):
+            _logger.warning(
+                "apply_create_missing_ts",
+                extra={
+                    "channel_id": sync_channel.channel_id,
+                    "thread_ts": thread_ts,
+                    "post_id": post_id,
+                },
+            )
         if ts:
             created.append(
                 schemas.PostMeta(
                     post_id=post_id,
                     sync_channel_id=sync_channel.id,
-                    ts=float(ts),
+                    ts=post_meta_ts(ts),
                     posted_as_user_id=posted_as,
                     source_user_id=envelope.get("source_user_id"),
                     source_workspace_id=envelope.get("source_workspace_id"),
@@ -67,12 +92,14 @@ def apply_target(
                 schemas.PostMeta(
                     post_id=post_id,
                     sync_channel_id=sync_channel.id,
-                    ts=float(split_ts),
+                    ts=post_meta_ts(split_ts),
                     posted_as_user_id=posted_as,
                     source_user_id=envelope.get("source_user_id"),
                     source_workspace_id=envelope.get("source_workspace_id"),
                 )
             )
+        if created:
+            DbManager.create_records(created)
         return created
 
     if kind == KIND_MESSAGE and action == ACTION_EDIT:
@@ -120,6 +147,7 @@ def apply_target(
         )
         if notice:
             created.append(notice)
+            DbManager.create_records(created)
         return created
 
     return []

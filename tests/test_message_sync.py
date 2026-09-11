@@ -73,8 +73,11 @@ class TestFindPublishingPostRecords:
     def test_skips_subscribe_only_and_other_channels(self):
         from helpers.post_meta import get_publishing_post_records
 
-        origin = SimpleNamespace(id=1, post_id="p1")
-        copy = SimpleNamespace(id=2, post_id="p1")
+        origin = SimpleNamespace(id=1, post_id="p1", source_workspace_id=1)
+        copy = SimpleNamespace(id=2, post_id="p1", source_workspace_id=1)
+        posted_copy = SimpleNamespace(id=3, post_id="p1", posted_as_user_id="U2", source_workspace_id=2)
+        bot_copy = SimpleNamespace(id=4, post_id="p1", source_workspace_id=2)
+        fed_copy = SimpleNamespace(id=5, post_id="p1", source_workspace_id=None)
         hub_pub = SimpleNamespace(id=11, channel_id="C_HUB", publishes=True)
         hub_sub = SimpleNamespace(id=12, channel_id="C_HUB", publishes=False)
         ao = SimpleNamespace(id=13, channel_id="C_AO", publishes=True)
@@ -83,8 +86,27 @@ class TestFindPublishingPostRecords:
             (origin, hub_pub, ws),
             (copy, hub_sub, ws),
             (copy, ao, ws),
+            (posted_copy, hub_pub, ws),
+            (bot_copy, hub_pub, ws),
+            (fed_copy, hub_pub, ws),
         ]
 
         result = get_publishing_post_records(rows, "C_HUB")
 
         assert result == [(origin, hub_pub, ws)]
+
+    def test_publishing_copy_on_this_channel_originates(self):
+        from helpers.post_meta import get_publishing_post_records
+
+        copy = SimpleNamespace(id=3, post_id="p1", posted_as_user_id="U2", source_workspace_id=1)
+        hub_pub = SimpleNamespace(id=11, channel_id="C_HUB", publishes=True)
+        ws = SimpleNamespace(id=2)
+        assert get_publishing_post_records([(copy, hub_pub, ws)], "C_HUB") == [(copy, hub_pub, ws)]
+
+    def test_reaction_notice_does_not_originate(self):
+        from helpers.post_meta import get_publishing_post_records
+
+        notice = SimpleNamespace(id=1, post_id="rxn-1", kind="reaction_notice")
+        hub_pub = SimpleNamespace(id=11, channel_id="C_HUB", publishes=True)
+        ws = SimpleNamespace(id=1)
+        assert get_publishing_post_records([(notice, hub_pub, ws)], "C_HUB") == []

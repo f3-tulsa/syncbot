@@ -75,7 +75,7 @@ Deploy-only warmth knobs are **not** app runtime env: **`GCP_CLOUD_RUN_MIN_INSTA
 | `PRIMARY_WORKSPACE` | Slack Team ID of the primary workspace. Required for backup/restore to be visible. DB reset (if enabled) is also scoped to this workspace. |
 | `ENABLE_DB_RESET` | When `true` / `1` / `yes` and `PRIMARY_WORKSPACE` matches the current workspace, shows the Reset Database button. Not prompted during deploy; set it in the env file (AWS `--setup-github` copies it when present), or in SAM / Terraform. |
 | `LOCAL_DEVELOPMENT` | `true` only for local dev; disables token verification and enables dev shortcuts. |
-| `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` (default `INFO`). |
+| `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` (default `INFO`). DEBUG also emits `sync.*` traces for message skip, pipeline fan-out, and file share ts. |
 | `PORT` | HTTP listen port for container entrypoint (`python app.py` / Cloud Run). Cloud Run injects this (typically `8080`); default `3000` when unset. |
 
 **Leftover env (not deploy inputs):** `REQUIRE_ADMIN`, `SYNCBOT_FEDERATION_ENABLED`, `SYNCBOT_PUBLIC_URL`, `SYNCBOT_INSTANCE_ID`, `ALLOW_PRIVATE_CHANNELS`, `BROADCAST_ALLOWED_WORKSPACES`, and `SOFT_DELETE_RETENTION_DAYS` are ignored if still set on an old process; the app logs a warning. Federation, private-channel policy, broadcast allowlists, soft-delete retention, and admin policy belong in **Settings**, not env. This instance's federation id is the SHA-256 hex fingerprint of its Ed25519 public key (64 characters), not a deploy-time UUID.

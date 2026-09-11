@@ -14,6 +14,7 @@ from helpers.sync_apply import apply_target
 from helpers.sync_participation import iter_publish_targets
 from helpers.user_action_echo import slack_message_ts
 from helpers.workspace import get_federated_workspace_for_sync
+from logger import log_sync
 
 _logger = logging.getLogger(__name__)
 
@@ -24,7 +25,6 @@ def run_sync_pipeline(
     source_channel_id: str,
     source_client: WebClient | None = None,
     source_sync_channel: schemas.SyncChannel | None = None,
-    origin_ts: str | None = None,
     thread_parent_ts_by_channel: dict[str, str] | None = None,
 ) -> list[schemas.PostMeta]:
     """Discover subscribers, dedupe, apply. Returns PostMeta rows to persist (targets only).
@@ -33,7 +33,6 @@ def run_sync_pipeline(
     reactions) carry ``thread_post_id`` or the parent ``post_id``. Fan-out is
     only the PostMeta records for that id, never every other Sync on the Channel.
     """
-    del origin_ts  # Callers still pass origin_ts; PostMeta identity is on the envelope.
     targets = iter_publish_targets(source_channel_id)
     records_post_id = get_post_id_for_post_records(envelope)
     post_records = get_post_records_for_post_id(records_post_id) if records_post_id else []
@@ -41,11 +40,24 @@ def run_sync_pipeline(
     parent_ts_by_channel = thread_parent_ts_by_channel or {
         sync_channel.channel_id: slack_message_ts(pm.ts) for pm, sync_channel, _ws in post_records
     }
+    discovered = [sync_channel.channel_id for sync_channel, _workspace in targets]
     if records_post_id is not None:
         allowed = set(post_records_by_channel)
         targets = [
             (sync_channel, workspace) for sync_channel, workspace in targets if sync_channel.channel_id in allowed
         ]
+        if not targets:
+            log_sync(
+                "pipeline_no_targets",
+                post_id=records_post_id,
+                kind=envelope.get("kind"),
+                action=envelope.get("action"),
+                thread_post_id=envelope.get("thread_post_id"),
+                source_channel_id=source_channel_id,
+                allowed=sorted(allowed),
+                discovered=discovered,
+            )
+            return []
 
     if not targets:
         return []
@@ -62,6 +74,13 @@ def run_sync_pipeline(
             target_meta = post_records_by_channel.get(sync_channel.channel_id)
             thread_ts = parent_ts_by_channel.get(sync_channel.channel_id) if is_thread_create else None
             if is_thread_create and not thread_ts:
+                log_sync(
+                    "pipeline_skip",
+                    reason="no_parent_ts",
+                    channel_id=sync_channel.channel_id,
+                    post_id=envelope.get("post_id"),
+                    thread_post_id=envelope.get("thread_post_id"),
+                )
                 continue
 
             if is_remote and fed_ws:

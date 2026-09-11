@@ -7,9 +7,14 @@ import pytest
 from sqlalchemy import inspect
 
 from helpers.user_action_echo import (
+    find_pending_file_share,
+    has_user_action_echo,
+    post_meta_ts,
     reaction_echo_fingerprint,
+    remember_pending_file_share,
     remember_user_action,
     slack_message_ts,
+    take_pending_file_share,
     take_user_action_echo,
 )
 
@@ -19,6 +24,17 @@ class TestReactionEchoFingerprint:
         assert reaction_echo_fingerprint("C1", "100.0", "thumbsup") == "C1:100.000000:thumbsup"
         assert slack_message_ts("100.000001") == "100.000001"
         assert slack_message_ts(100.0) == "100.000000"
+
+    def test_post_meta_ts_is_six_decimal_not_float(self):
+        from decimal import Decimal
+
+        slack_ts = "1757529600.123456"
+        exact = Decimal("1757529600.123456")
+        assert post_meta_ts(slack_ts) == exact
+        assert post_meta_ts(slack_ts) != float(slack_ts)
+        edge = "9999999999.123456"
+        assert post_meta_ts(edge) == Decimal(edge)
+        assert post_meta_ts(edge) != Decimal(str(float(edge)))
 
 
 class TestRememberAndTake:
@@ -50,3 +66,21 @@ class TestRememberAndTake:
     def test_take_misses_different_fingerprint(self, echo_db):
         remember_user_action("T2", "U1", "reaction_added", "C1:1.0:a")
         assert take_user_action_echo("T2", "U1", "reaction_added", "C1:1.0:b") is False
+
+    def test_file_echo_peek_does_not_consume(self, echo_db):
+        remember_user_action("T2", "U_MAPPED", "file", "F99")
+        assert has_user_action_echo("T2", "U_MAPPED", "file", "F99") is True
+        assert has_user_action_echo("T2", "U_MAPPED", "file", "F99") is True
+        assert take_user_action_echo("T2", "U_MAPPED", "message", "C_TGT:200.000000") is False
+
+    def test_message_echo_peek_does_not_consume(self, echo_db):
+        remember_user_action("T2", "U_MAPPED", "message", "C_TGT:200.000000")
+        assert has_user_action_echo("T2", "U_MAPPED", "message", "C_TGT:200.000000") is True
+        assert has_user_action_echo("T2", "U_MAPPED", "message", "C_TGT:200.000000") is True
+
+    def test_pending_file_share_find_then_take(self, echo_db):
+        remember_pending_file_share("T2", "C_TGT", "F1", "postabc")
+        assert find_pending_file_share("T2", "C_TGT", "F1") == "postabc"
+        assert find_pending_file_share("T2", "C_TGT", "F1") == "postabc"
+        assert take_pending_file_share("T2", "C_TGT", "F1") == "postabc"
+        assert take_pending_file_share("T2", "C_TGT", "F1") is None

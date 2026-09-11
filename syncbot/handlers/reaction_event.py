@@ -5,7 +5,6 @@ import logging
 from slack_sdk.web import WebClient
 
 import helpers
-from db import DbManager
 from db.event_claims import run_claimed
 
 _logger = logging.getLogger(__name__)
@@ -42,15 +41,12 @@ def _sync_reaction_records(body: dict, client: WebClient, reacted_records: list[
         workspace_name=helpers.resolve_workspace_name(source_workspace),
         source_ts=item.get("ts"),
     )
-    post_list = helpers.run_sync_pipeline(
+    helpers.run_sync_pipeline(
         envelope,
         source_channel_id=channel_id,
         source_client=client,
         source_sync_channel=source_sync_channel,
-        origin_ts=item.get("ts"),
     )
-    if post_list:
-        DbManager.create_records(post_list)
 
 
 def handle_reaction(
@@ -95,7 +91,7 @@ def handle_reaction(
         if not reacted_records:
             _logger.debug(
                 "reaction_no_post_meta",
-                extra={"msg_ts": msg_ts, "channel_id": channel_id, "float_ts": float(msg_ts)},
+                extra={"msg_ts": msg_ts, "channel_id": channel_id},
             )
             # Message PostMeta may still be in flight; do not complete the claim.
             return False

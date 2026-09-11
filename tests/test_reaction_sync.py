@@ -98,8 +98,8 @@ class TestSkipOrigin:
         target = _sync_channel(constants.REACTION_DIRECTION_BOTH, channel_id="C_TGT")
         source_ws = SimpleNamespace(id=1, team_id="T1", bot_token="enc")
         target_ws = SimpleNamespace(id=2, team_id="T2", bot_token="enc")
-        origin_meta = SimpleNamespace(ts=1.0, post_id="p1")
-        target_meta = SimpleNamespace(ts=2.0, post_id="p2")
+        origin_meta = SimpleNamespace(ts=1.0, post_id="p1", source_workspace_id=1)
+        target_meta = SimpleNamespace(ts=2.0, post_id="p2", source_workspace_id=1)
         body = {
             "event": {
                 "type": "reaction_added",
@@ -127,6 +127,39 @@ class TestSkipOrigin:
         assert envelope["post_id"] == "p1"
         assert envelope["source_sync_channel_id"] == source.id
         assert envelope["people"][0]["user_id"] == "U_SRC"
+
+    def test_publishing_copy_originates_reaction(self):
+        from handlers.reaction_event import _sync_reaction_records
+
+        target = _sync_channel(constants.REACTION_DIRECTION_BOTH, channel_id="C_TGT")
+        target.sync_id = 9
+        target_ws = SimpleNamespace(id=2, team_id="T2", bot_token="enc")
+        copy_meta = SimpleNamespace(
+            ts=2.0,
+            post_id="p1",
+            posted_as_user_id="U_TGT",
+            source_workspace_id=1,
+            kind="message",
+        )
+        body = {
+            "event": {
+                "type": "reaction_added",
+                "reaction": "thumbsup",
+                "user": "U_TGT",
+                "item": {"channel": "C_TGT"},
+            }
+        }
+
+        with (
+            patch("handlers.reaction_event.helpers.get_user_info", return_value=("Bob", None)),
+            patch("handlers.reaction_event.helpers.resolve_workspace_name", return_value="B"),
+            patch("handlers.reaction_event.helpers.run_sync_pipeline", return_value=[]) as pipeline,
+        ):
+            _sync_reaction_records(body, MagicMock(), [(copy_meta, target, target_ws)])
+
+        assert pipeline.call_args.kwargs["source_channel_id"] == "C_TGT"
+        assert pipeline.call_args.kwargs["source_sync_channel"] is target
+        assert pipeline.call_args.args[0]["post_id"] == "p1"
 
 
 class TestApplyOff:

@@ -15,11 +15,12 @@ Provides:
 
 Usage::
 
-    from logger import configure_logging, set_correlation_id, emit_metric
+    from logger import configure_logging, set_correlation_id, emit_metric, log_sync
 
     configure_logging()          # call once at module level
     set_correlation_id()         # call at the start of each request
     emit_metric("messages_synced", 3, sync_id="abc")
+    log_sync("message_skip", reason="file_echo", channel="C123")
 """
 
 import json
@@ -224,6 +225,16 @@ def configure_logging(level: int = logging.INFO) -> None:
 # ---------------------------------------------------------------------------
 
 _metrics_logger = logging.getLogger("syncbot.metrics")
+_sync_logger = logging.getLogger("syncbot.sync")
+
+
+def log_sync(event: str, **fields: Any) -> None:
+    """DEBUG trace for message/reaction fan-out. Stable *event* names for CloudWatch.
+
+    Filter on ``message`` beginning with ``sync.``. Omitted when ``LOG_LEVEL``
+    is INFO or higher.
+    """
+    _sync_logger.debug(f"sync.{event}", extra=fields)
 
 
 def emit_metric(

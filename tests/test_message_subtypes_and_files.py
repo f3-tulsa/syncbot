@@ -47,6 +47,7 @@ class TestMessageSubtypeAllowlist:
             patch("handlers.message.helpers.origin_publishes_anywhere", return_value=True),
             patch("handlers.message.helpers.iter_publish_targets", return_value=[object()]),
             patch("handlers.message.helpers.post_meta_exists_for_channel_ts", return_value=False),
+            patch("handlers.message.helpers.has_user_action_echo", return_value=False),
             patch("handlers.message.helpers.take_user_action_echo", return_value=False),
         ):
             respond_to_message_event(body, MagicMock(), MagicMock(), {})
@@ -67,6 +68,7 @@ class TestMessageSubtypeAllowlist:
             patch("handlers.message.helpers.origin_publishes_anywhere", return_value=True),
             patch("handlers.message.helpers.iter_publish_targets", return_value=[object()]),
             patch("handlers.message.helpers.post_meta_exists_for_channel_ts", return_value=False),
+            patch("handlers.message.helpers.has_user_action_echo", return_value=False),
             patch("handlers.message.helpers.take_user_action_echo", return_value=False),
         ):
             respond_to_message_event(body, MagicMock(), MagicMock(), {})
@@ -234,7 +236,6 @@ class TestFederationInboundReplyBroadcast:
             patch("federation.api.helpers.resolve_channel_references", side_effect=lambda text, *_a, **_k: text),
             patch("federation.api.WebClient"),
             patch("federation.api.apply_target", return_value=created) as apply,
-            patch.object(federation_api.DbManager, "create_records") as create,
         ):
             status, resp = federation_api.handle_message(body, fed_ws)
 
@@ -243,4 +244,3 @@ class TestFederationInboundReplyBroadcast:
         envelope = apply.call_args.args[0]
         assert envelope["reply_broadcast"] is True
         assert envelope["images"][0]["image_url"] == "https://gif.example/a.gif"
-        assert create.called

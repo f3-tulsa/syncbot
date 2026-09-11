@@ -156,11 +156,13 @@ class SyncChannel(BaseClass, GetDBClass):
 
 
 class PostMeta(BaseClass, GetDBClass):
+    """Origin or copy of a synced message. Persist ``ts`` with ``post_meta_ts``."""
+
     __tablename__ = "post_meta"
     id = Column(Integer, primary_key=True)
     post_id = Column(String(100))
     sync_channel_id = Column(Integer, ForeignKey("sync_channels.id"))
-    ts = Column(DECIMAL(16, 6))
+    ts = Column(DECIMAL(16, 6))  # post_meta_ts(); never float
     kind = Column(String(32), nullable=False, default="message")
     parent_post_id = Column(String(100), nullable=True)
     reaction = Column(String(100), nullable=True)

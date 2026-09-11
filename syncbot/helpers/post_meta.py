@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import constants
 from db import DbManager, schemas
 from helpers.sync_participation import channel_publishes
+from helpers.user_action_echo import post_meta_ts
 
 
 def _dedupe_post_records(
@@ -46,7 +48,11 @@ def get_post_records(thread_ts: str) -> list[tuple[schemas.PostMeta, schemas.Syn
     membership, so several ``PostMeta`` rows can share the same ``ts``. Union
     every matching ``post_id`` rather than taking ``post[0]`` only.
     """
-    posts = DbManager.find_records(schemas.PostMeta, [schemas.PostMeta.ts == float(thread_ts)])
+    try:
+        ts_value = post_meta_ts(thread_ts)
+    except (TypeError, ValueError):
+        return []
+    posts = DbManager.find_records(schemas.PostMeta, [schemas.PostMeta.ts == ts_value])
     post_ids = {row.post_id for row in posts if row.post_id}
     if not post_ids:
         return []
@@ -66,7 +72,7 @@ def get_post_records(thread_ts: str) -> list[tuple[schemas.PostMeta, schemas.Syn
 def post_meta_exists_for_channel_ts(channel_id: str, ts: str | float) -> bool:
     """True when any PostMeta row already records this channel+ts (copy guard)."""
     try:
-        float_ts = float(ts)
+        ts_value = post_meta_ts(ts)
     except (TypeError, ValueError):
         return False
     from helpers.sync_participation import get_channel_memberships
@@ -79,7 +85,7 @@ def post_meta_exists_for_channel_ts(channel_id: str, ts: str | float) -> bool:
         schemas.PostMeta,
         [
             schemas.PostMeta.sync_channel_id.in_(ids),
-            schemas.PostMeta.ts == float_ts,
+            schemas.PostMeta.ts == ts_value,
         ],
     )
     return bool(rows)
@@ -89,13 +95,22 @@ def get_publishing_post_records(
     post_records: list[tuple[schemas.PostMeta, schemas.SyncChannel, schemas.Workspace]],
     channel_id: str,
 ) -> list[tuple[schemas.PostMeta, schemas.SyncChannel, schemas.Workspace]]:
-    """Publishing memberships on *channel_id* that already have these PostMeta records."""
+    """Publishing memberships on *channel_id* that already have these PostMeta records.
+
+    A copy on a publishing Channel still originates follow-ups (reactions,
+    thread replies, edits, deletes) using the shared ``post_id``. Inbound
+    *creates* of that copy are skipped earlier by echo and
+    :func:`post_meta_exists_for_channel_ts`. Hybrid notices never originate.
+    """
     rows: list[tuple[schemas.PostMeta, schemas.SyncChannel, schemas.Workspace]] = []
     seen: set[int] = set()
     for post_meta, sync_channel, workspace in post_records:
         if getattr(sync_channel, "channel_id", None) != channel_id:
             continue
         if not channel_publishes(sync_channel):
+            continue
+        kind = getattr(post_meta, "kind", None) or constants.POST_META_KIND_MESSAGE
+        if kind == constants.POST_META_KIND_REACTION_NOTICE:
             continue
         if sync_channel.id in seen:
             continue
@@ -140,7 +155,7 @@ def build_origin_post_meta_rows(
             schemas.PostMeta(
                 post_id=post_uuid,
                 sync_channel_id=sync_channel.id,
-                ts=float(source_ts),
+                ts=post_meta_ts(source_ts),
                 source_user_id=user_id,
                 source_workspace_id=source_workspace_id,
             )
@@ -150,9 +165,65 @@ def build_origin_post_meta_rows(
             schemas.PostMeta(
                 post_id=post_uuid,
                 sync_channel_id=source_sync_channel.id,
-                ts=float(source_ts),
+                ts=post_meta_ts(source_ts),
                 source_user_id=user_id,
                 source_workspace_id=source_workspace_id,
             )
         )
     return rows
+
+
+def complete_copy_ts_from_pending_share(
+    team_id: str | None,
+    channel_id: str | None,
+    ts: str | None,
+    file_ids: list[str],
+) -> bool | None:
+    """Write copy PostMeta when extract missed the share ts.
+
+    ``True`` wrote a row. ``False`` means retry (origin PostMeta not stored yet).
+    ``None`` means this event is not a pending share.
+    """
+    if not team_id or not channel_id or not ts or not file_ids:
+        return None
+    from helpers.user_action_echo import find_pending_file_share, take_pending_file_share
+
+    pending_file_id = None
+    post_id = None
+    for file_id in file_ids:
+        post_id = find_pending_file_share(team_id, channel_id, file_id)
+        if post_id:
+            pending_file_id = file_id
+            break
+    if not post_id or pending_file_id is None:
+        return None
+    if post_meta_exists_for_channel_ts(channel_id, ts):
+        take_pending_file_share(team_id, channel_id, pending_file_id)
+        return None
+    records = get_post_records_for_post_id(post_id)
+    if not records:
+        return False
+    sync_ids = {sync_channel.sync_id for _pm, sync_channel, _ws in records}
+    existing_ids = {sync_channel.id for _pm, sync_channel, _ws in records}
+    from helpers.sync_participation import get_channel_memberships
+
+    origin = records[0][0]
+    created: list[schemas.PostMeta] = []
+    for sync_channel, _workspace in get_channel_memberships(channel_id):
+        if sync_channel.sync_id not in sync_ids or sync_channel.id in existing_ids:
+            continue
+        created.append(
+            schemas.PostMeta(
+                post_id=post_id,
+                sync_channel_id=sync_channel.id,
+                ts=post_meta_ts(ts),
+                source_user_id=origin.source_user_id,
+                source_workspace_id=origin.source_workspace_id,
+            )
+        )
+    if not created:
+        take_pending_file_share(team_id, channel_id, pending_file_id)
+        return None
+    DbManager.create_records(created)
+    take_pending_file_share(team_id, channel_id, pending_file_id)
+    return True

@@ -543,8 +543,6 @@ def handle_message(body: dict, fed_ws: schemas.FederatedWorkspace) -> tuple[int,
         if mapped_local:
             envelope["mapped_user_id"] = mapped_local
         created = apply_target(envelope, sync_channel, workspace, thread_ts=thread_ts)
-        if post_id and created:
-            DbManager.create_records(created)
         ts = slack_message_ts(created[0].ts) if created else None
 
         _logger.info(

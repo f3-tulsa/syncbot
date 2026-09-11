@@ -111,7 +111,7 @@ On a Hybrid or Direct target, removing a reaction removes that person's native e
 
 ## Pause / Resume / Leave
 
-- **Pause Sync / Resume Sync** — Individual channel syncs can be paused and resumed without losing configuration. SyncBot asks you to confirm. Paused channels do not sync any messages, threads, or reactions.
+- **Pause Sync / Resume Sync** — Individual channel syncs can be paused and resumed without losing configuration. SyncBot asks you to confirm. A paused Channel does not send or receive messages, threads, or reactions.
 - **Leave Sync** — Removes this workspace's channel from the Sync and deletes this workspace's tracking history. Other workspaces continue. SyncBot asks you to confirm.
 - **Last publisher** — If you are the last publisher, Leave Sync warns that this ends the Sync for everyone and deletes Sync history. Anyone in the group can Create Sync later. Slack messages stay; only SyncBot's tracking history is removed.
 - **Channel notices** — When you Create Sync, SyncBot posts in that Channel: who created it, and whether messages will be one-way or two-way. When another workspace joins, it posts who subscribed which Channel, plus a second sentence for one-way vs two-way.
@@ -132,7 +132,7 @@ The Home tab has a **Refresh** button in **SyncBot Configuration** for everyone,
 
 ## Media Sync
 
-On the **same instance**, Slack-hosted files of any type (photos, video, PDFs, audio, zips, and so on) are downloaded from the source and uploaded to each target channel. GIFs from the Slack GIF picker or GIPHY stay public image blocks. When the mapped author has authorized SyncBot in the target workspace, ordinary file shares can post as that person; otherwise they post as SyncBot. Either way, a notice names the original author in code ticks — for example `` `Ada Lovelace` shared a file `` — never as an @mention. That notice is the same for a caption-only share (file on the same message) and for a share that also has text (file in a thread under the text). When the text is a top-level channel post, the threaded file notice is also sent to the channel.
+On the **same instance**, Slack-hosted files of any type (photos, video, PDFs, audio, zips, and so on) are downloaded from the source and uploaded to each target channel. GIFs from the Slack GIF picker or GIPHY stay public image blocks. When the mapped author has authorized SyncBot in the target workspace, ordinary file shares post as that person, with the file on the same message as the caption (the same shape Slack uses on the source). If the source used Block Kit, that body is kept on that same native message. When they have not authorized, the share posts as SyncBot. Bot posts add a notice that names the original author in code ticks — for example `` `Ada Lovelace` shared a file `` — never as an @mention. For a bot caption-only share the notice sits on the file message; for bot text plus a file, the text is posted first and the file is a thread reply with that notice (also sent to the channel when the text was a top-level post).
 
 App posts that use Block Kit (for example a Slackblast preblast) sync from the layout blocks, so line breaks and emoji stay intact. Slack's "Show more" control is only how the client folds a long message; SyncBot does not stop at the preview. Buttons that belong to the source app (Edit this preblast, and similar) are not copied, because they would not work in the other workspace.
 
@@ -143,8 +143,8 @@ App posts that use Block Kit (for example a Slackblast preblast) sync from the l
 | Text only | Single message with text, shown under the original poster's name and avatar |
 | GIF (Slack picker / GIPHY) | Single message with the GIF embedded inline via image block, under the poster's name |
 | GIF + text | Single message with text and GIF together, under the poster's name |
-| File only (no text) | Single file upload as the mapped person when they authorized in the target workspace, otherwise as SyncBot, with `` `Display Name` shared a file `` |
-| Text + file | Text message under the poster's name, then the file in a thread reply with the same `` `Display Name` shared a file `` notice (also sent to the channel when the text was a top-level post) |
+| File only (no text) | As the mapped person when they authorized (native share, no extra notice); otherwise as SyncBot with `` `Display Name` shared a file `` |
+| Text + file | As the mapped person: one native share with the caption (and Block Kit, when the source had it) and file together. As SyncBot: text first, then the file in a thread reply with `` `Display Name` shared a file `` (also sent to the channel when the text was a top-level post) |
 | Multiple files | Same as the matching row above; all files go in one upload |
 
 ## External Connections

@@ -188,8 +188,8 @@ class TestHandleMessageEditForwardsLayoutBlocks:
             user_id=None,
             content_blocks=build_content_blocks_for_sync(_preblast_blocks()),
         )
-        post_meta = SimpleNamespace(post_id="p1", ts=1.0, sync_channel_id=1)
-        sync_channel = SimpleNamespace(channel_id="C_SRC", id=1, sync_id=1)
+        post_meta = SimpleNamespace(post_id="p1", ts=1.0, sync_channel_id=1, source_workspace_id=1)
+        sync_channel = SimpleNamespace(channel_id="C_SRC", id=1, sync_id=1, publishes=True)
         workspace = SimpleNamespace(id=1, team_id="T1", bot_token="enc")
         with (
             patch("handlers.message.helpers.get_post_records", return_value=[(post_meta, sync_channel, workspace)]),
@@ -287,6 +287,20 @@ class TestPostMessageSkipsPrependWhenBodyBlocksPresent:
             post_message(bot_token="xoxb", channel_id="C1", msg_text="hello", update_ts="2.0")
         assert slack.chat_update.call_args.kwargs["unfurl_links"] is False
         assert slack.chat_update.call_args.kwargs["unfurl_media"] is False
+        assert "reply_broadcast" not in slack.chat_update.call_args.kwargs
+
+    def test_chat_update_can_keep_reply_broadcast(self):
+        slack = MagicMock()
+        slack.chat_update.return_value = {"ts": "2.0"}
+        with patch("helpers.slack_api.WebClient", return_value=slack):
+            post_message(
+                bot_token="xoxb",
+                channel_id="C1",
+                msg_text="hello",
+                update_ts="2.0",
+                reply_broadcast=True,
+            )
+        assert slack.chat_update.call_args.kwargs["reply_broadcast"] is True
 
 
 class TestRewriteContentBlocksRichText:

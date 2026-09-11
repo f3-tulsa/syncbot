@@ -75,7 +75,8 @@ class TestFederationMessageInbound:
             patch("helpers.slack_write.decrypt_bot_token", return_value="xoxb-test"),
             patch("helpers.slack_write.get_user_token", return_value=None),
             patch("helpers.slack_write.post_message", return_value={"ts": "99.000001"}) as post_message_mock,
-            patch.object(federation_api.DbManager, "create_records"),
+            patch("helpers.sync_apply.get_live_sync_channel", side_effect=lambda sc: sc),
+            patch("helpers.sync_apply.DbManager.create_records"),
         ):
             status, resp = federation_api.handle_message(body, fed_ws)
 

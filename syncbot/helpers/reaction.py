@@ -16,7 +16,7 @@ from helpers.encryption import decrypt_bot_token
 from helpers.reaction_notice import build_reaction_notice_post_id, delete_notices_for_unreact
 from helpers.slack_api import slack_error_code
 from helpers.sync_participation import channel_subscribes
-from helpers.user_action_echo import reaction_echo_fingerprint, remember_user_action, slack_message_ts
+from helpers.user_action_echo import post_meta_ts, reaction_echo_fingerprint, remember_user_action, slack_message_ts
 
 _logger = logging.getLogger(__name__)
 
@@ -140,7 +140,7 @@ def _post_threaded_reaction_notice(
     return schemas.PostMeta(
         post_id=notice_post_id,
         sync_channel_id=sync_channel.id,
-        ts=float(ts),
+        ts=post_meta_ts(ts),
         kind=constants.POST_META_KIND_REACTION_NOTICE,
         parent_post_id=parent_post_id,
         reaction=reaction,
@@ -488,6 +488,6 @@ def update_sync_channel_reactions(
     )
     rows = DbManager.find_records(schemas.SyncChannel, [schemas.SyncChannel.id == sync_channel_id])
     if rows:
-        from helpers.sync_participation import invalidate_channel_memberships
+        from helpers.sync_participation import invalidate_sync_fanout_for_syncs
 
-        invalidate_channel_memberships(rows[0].channel_id)
+        invalidate_sync_fanout_for_syncs([rows[0].sync_id])

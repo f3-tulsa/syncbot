@@ -433,7 +433,7 @@ class DbManager:
         only — extra keywords such as ``team_id=`` raise ``TypeError``):
 
         * ``Workspace`` → Slack ``team_id`` (``T…``)
-        * ``SyncChannel`` → Slack ``channel_id`` (``C…``)
+        * ``SyncChannel`` → integer primary key (a Slack channel may be on several syncs)
         * ``PostMeta`` → Slack ``post_id``
         * most other models → integer ``id``
 
