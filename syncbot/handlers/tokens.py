@@ -184,6 +184,8 @@ def _soft_delete_uninstalled_workspace(team_id: str) -> None:
             {schemas.SyncChannel.deleted_at: now, schemas.SyncChannel.status: "paused"},
         )
 
+    helpers.invalidate_sync_fanout_for_syncs(c.sync_id for c in my_channels)
+
     notified_ws: set[int] = set()
     for membership in active_memberships:
         group_members = DbManager.find_records(

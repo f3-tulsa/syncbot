@@ -17,6 +17,38 @@ def invalidate_channel_memberships(channel_id: str | None) -> None:
         _cache_delete_prefix(f"publish_targets:{channel_id}")
 
 
+def invalidate_sync_fanout_for_syncs(sync_ids) -> None:
+    """Drop fan-out caches for every Channel that belongs to *sync_ids*.
+
+    Includes soft-deleted rows so Pause, Leave, and uninstall still clear the
+    origin ``publish_targets:`` entry that pointed at this Channel.
+    """
+    ids = [sid for sid in sync_ids if sid]
+    if not ids:
+        return
+    channels = DbManager.find_records(
+        schemas.SyncChannel,
+        [schemas.SyncChannel.sync_id.in_(ids)],
+    )
+    for channel in channels:
+        invalidate_channel_memberships(channel.channel_id)
+
+
+def get_live_sync_channel(sync_channel: schemas.SyncChannel | None) -> schemas.SyncChannel | None:
+    """Re-read *sync_channel* so pause or leave wins over a stale fan-out cache."""
+    if sync_channel is None:
+        return None
+    row_id = getattr(sync_channel, "id", None)
+    if not row_id:
+        return None
+    live = DbManager.get_record(schemas.SyncChannel, id=row_id)
+    if live is None or live.deleted_at is not None:
+        return None
+    if (live.status or "active") != "active":
+        return None
+    return live
+
+
 def parse_participation_flags(value: str | None) -> tuple[bool, bool]:
     """Map a participation radio value to ``(publishes, subscribes)``.
 

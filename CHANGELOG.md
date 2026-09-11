@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - File shares take the message ts from the upload response when present, with a shorter files.info fallback
 - Home tab reopen skips a rebuild when the content hash is unchanged
 
+### Fixed
+
+- Pause Sync stops inbound until Resume
+
 
 ## [1.6.1] - 2026-09-10
 
