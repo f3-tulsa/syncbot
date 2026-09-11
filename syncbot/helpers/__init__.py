@@ -61,6 +61,8 @@ from helpers.envelope import (
 from helpers.files import (
     cleanup_temp_files,
     download_slack_files,
+    event_is_new_file_share,
+    file_ids_from_message_event,
     upload_files_to_slack,
 )
 from helpers.group_roles import (
@@ -105,6 +107,7 @@ from helpers.oauth import (
 )
 from helpers.post_meta import (
     build_origin_post_meta_rows,
+    complete_copy_ts_from_pending_share,
     get_post_records,
     get_post_records_for_post_id,
     get_publishing_post_records,
@@ -149,6 +152,7 @@ from helpers.sync_participation import (
     get_channel_memberships,
     get_origin_sync_channel,
     invalidate_channel_memberships,
+    invalidate_sync_fanout_for_syncs,
     iter_publish_targets,
     origin_publishes_anywhere,
     parse_participation_flags,
@@ -156,9 +160,13 @@ from helpers.sync_participation import (
 )
 from helpers.sync_pipeline import run_sync_pipeline
 from helpers.user_action_echo import (
+    has_user_action_echo,
+    post_meta_ts,
     reaction_echo_fingerprint,
+    remember_pending_file_share,
     remember_user_action,
     slack_message_ts,
+    take_pending_file_share,
     take_user_action_echo,
 )
 from helpers.user_map import (
@@ -223,6 +231,8 @@ __all__ = [
     "decrypt_bot_token",
     "delete_message",
     "download_slack_files",
+    "event_is_new_file_share",
+    "file_ids_from_message_event",
     "encrypt_bot_token",
     "ACTION_ADD",
     "ACTION_CREATE",
@@ -344,17 +354,23 @@ __all__ = [
     "get_channel_memberships",
     "get_origin_sync_channel",
     "invalidate_channel_memberships",
+    "invalidate_sync_fanout_for_syncs",
     "iter_publish_targets",
     "origin_publishes_anywhere",
     "parse_participation_flags",
     "participation_label",
     "run_sync_pipeline",
     "post_meta_exists_for_channel_ts",
+    "complete_copy_ts_from_pending_share",
     "slack_write_create",
     "slack_write_delete",
     "slack_write_edit",
     "reaction_echo_fingerprint",
+    "has_user_action_echo",
     "remember_user_action",
+    "remember_pending_file_share",
+    "post_meta_ts",
     "slack_message_ts",
     "take_user_action_echo",
+    "take_pending_file_share",
 ]

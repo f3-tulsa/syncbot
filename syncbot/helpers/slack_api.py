@@ -54,8 +54,17 @@ def slack_retry(fn):
 
 @slack_retry
 def _users_info(client: WebClient, user_id: str) -> dict:
-    """Low-level wrapper so the retry decorator can catch SlackApiError."""
-    return client.users_info(user=user_id)
+    """``users.info`` with retry and a token-keyed process cache."""
+    fingerprint = _token_fingerprint(client)
+    cache_key = f"users_info_raw:{fingerprint}:{user_id}" if fingerprint else None
+    if cache_key:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached
+    res = client.users_info(user=user_id)
+    if cache_key:
+        _cache_set(cache_key, res, ttl=_USER_INFO_CACHE_TTL)
+    return res
 
 
 def _token_fingerprint(client: WebClient) -> str | None:
@@ -181,6 +190,19 @@ def _conversations_history(client: WebClient, **kwargs) -> dict:
     return client.conversations_history(**kwargs)
 
 
+def _conversation_messages(res) -> list[dict] | None:
+    """``messages`` from a Slack SDK response (dict or SlackResponse)."""
+    if res is None:
+        return None
+    messages = res.get("messages") if hasattr(res, "get") else None
+    if messages is None:
+        data = getattr(res, "data", None)
+        messages = data.get("messages") if isinstance(data, dict) else None
+    if not isinstance(messages, list):
+        return None
+    return messages
+
+
 def fetch_message_layout_blocks(client: WebClient, event: dict) -> list[dict]:
     """Load Block Kit from ``conversations.history`` when the Events payload omitted it.
 
@@ -201,8 +223,8 @@ def fetch_message_layout_blocks(client: WebClient, event: dict) -> list[dict]:
     except SlackApiError as exc:
         _logger.debug("fetch_message_layout_blocks failed: %s", exc)
         return []
-    messages = res.get("messages") if res is not None else None
-    if not isinstance(messages, list) or not messages or not isinstance(messages[0], dict):
+    messages = _conversation_messages(res)
+    if not messages or not isinstance(messages[0], dict):
         return []
     return get_event_layout_blocks(messages[0])
 
@@ -232,14 +254,17 @@ def post_message(
         all_blocks = []
     fallback_text = msg_text if msg_text.strip() else "Shared a file"
     if update_ts:
-        res = slack_client.chat_update(
-            channel=channel_id,
-            text=fallback_text,
-            ts=update_ts,
-            blocks=all_blocks,
-            unfurl_links=False,
-            unfurl_media=False,
-        )
+        update_kwargs: dict = {
+            "channel": channel_id,
+            "text": fallback_text,
+            "ts": update_ts,
+            "blocks": all_blocks,
+            "unfurl_links": False,
+            "unfurl_media": False,
+        }
+        if reply_broadcast:
+            update_kwargs["reply_broadcast"] = True
+        res = slack_client.chat_update(**update_kwargs)
     else:
         username_str = format_synced_from_line(user_name, workspace_name) if user_name else None
         kwargs: dict = {

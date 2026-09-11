@@ -12,6 +12,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Code refactor; remove dead code, use verb prefixes for helpers, lockstep group invite Slack IDs
+- Message and reaction sync skip Slack lookups until the channel has membership and publish targets
+- File shares take the message ts from the upload response when present, then channel history
+- Home tab reopen skips a rebuild when the content hash is unchanged
+- User-token file shares keep the caption and Block Kit on the same native message as the file
+- DEBUG logs include sync.* traces for message skip, pipeline fan-out, and file share ts
+
+### Fixed
+
+- Pause Sync stops inbound until Resume
+- User-token file shares skip inbound events by Slack file id and the share ts, so copies are not treated as new origins
+- Reactions on a publishing Channel still fan out when the message is a synced copy; inbound creates stay skipped by echo and PostMeta
+- Reactions and thread replies find existing messages by a six-decimal Slack ts, so older posts still match
+- Thread replies Slack marks as a later share of a parent file still sync
+- File-only bot shares record the share ts after Slack omits it on complete-upload, so thread replies still attach
 
 
 ## [1.6.1] - 2026-09-10

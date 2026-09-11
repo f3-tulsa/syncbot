@@ -12,7 +12,7 @@ from slack_sdk.errors import SlackApiError
 import constants
 from db import DbManager, schemas
 from helpers.slack_api import slack_error_code
-from helpers.user_action_echo import slack_message_ts
+from helpers.user_action_echo import post_meta_ts, slack_message_ts
 
 _logger = logging.getLogger(__name__)
 _slack_error_code = slack_error_code
@@ -236,11 +236,15 @@ def _delete_leftover_thread_notices(
         ts = msg.get("ts")
         if not ts:
             continue
+        try:
+            ts_value = post_meta_ts(ts)
+        except ValueError:
+            continue
         row = DbManager.find_records(
             schemas.PostMeta,
             [
                 schemas.PostMeta.sync_channel_id == sync_channel.id,
-                schemas.PostMeta.ts == float(ts),
+                schemas.PostMeta.ts == ts_value,
             ],
         )
         if (
@@ -252,11 +256,15 @@ def _delete_leftover_thread_notices(
 
 
 def get_post_meta_by_channel_ts(sync_channel_id: int, msg_ts: str | float) -> schemas.PostMeta | None:
+    try:
+        ts_value = post_meta_ts(msg_ts)
+    except (TypeError, ValueError):
+        return None
     rows = DbManager.find_records(
         schemas.PostMeta,
         [
             schemas.PostMeta.sync_channel_id == sync_channel_id,
-            schemas.PostMeta.ts == float(msg_ts),
+            schemas.PostMeta.ts == ts_value,
         ],
     )
     return rows[0] if rows else None

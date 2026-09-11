@@ -15,7 +15,7 @@ from helpers.encryption import decrypt_bot_token
 from helpers.files import upload_files_to_slack
 from helpers.message_blocks import rewrite_content_blocks, trim_target_blocks
 from helpers.slack_api import delete_message, post_message, slack_error_code
-from helpers.user_action_echo import remember_user_action, slack_message_ts
+from helpers.user_action_echo import remember_pending_file_share, remember_user_action, slack_message_ts
 from helpers.user_map import (
     apply_mentioned_users,
     format_unmapped_author_label,
@@ -24,6 +24,7 @@ from helpers.user_map import (
     resolve_channel_references,
     resolve_mention_for_workspace,
 )
+from logger import log_sync
 
 _logger = logging.getLogger(__name__)
 
@@ -47,6 +48,15 @@ def pick_write_token(workspace, mapped_user_id: str | None) -> tuple[str, str | 
 def remember_message_echo(team_id: str | None, user_id: str | None, channel_id: str, ts: str) -> None:
     if team_id and user_id and channel_id and ts:
         remember_user_action(team_id, user_id, "message", f"{channel_id}:{slack_message_ts(ts)}")
+
+
+def remember_file_echoes(team_id: str | None, user_id: str | None, file_ids) -> None:
+    """Remember Slack file ids so inbound ``file_share`` events can be skipped."""
+    if not team_id or not user_id:
+        return
+    for file_id in file_ids:
+        if file_id:
+            remember_user_action(team_id, user_id, "file", str(file_id))
 
 
 def build_target_blocks(
@@ -115,8 +125,21 @@ def _upload_target_files(
     reply_broadcast: bool,
     team_id: str | None,
     as_user: str | None,
+    post_id: str | None = None,
 ) -> str | None:
     """Upload files on the target; remember echo when posted as a mapped user."""
+
+    uploaded_ids: list[str] = []
+
+    def _remember_files(file_ids) -> None:
+        uploaded_ids.extend(str(file_id) for file_id in file_ids if file_id)
+        if as_user:
+            remember_file_echoes(team_id, as_user, file_ids)
+
+    def _remember_ts(ts: str) -> None:
+        if as_user:
+            remember_message_echo(team_id, as_user, channel_id, ts)
+
     _, file_ts = upload_files_to_slack(
         bot_token=token,
         channel_id=channel_id,
@@ -124,10 +147,48 @@ def _upload_target_files(
         initial_comment=initial_comment,
         thread_ts=thread_ts,
         reply_broadcast=reply_broadcast,
+        after_upload=_remember_files,
+        after_share_ts=_remember_ts,
     )
-    if as_user and file_ts:
-        remember_message_echo(team_id, as_user, channel_id, file_ts)
+    if not file_ts and post_id and team_id:
+        for file_id in uploaded_ids:
+            remember_pending_file_share(team_id, channel_id, file_id, post_id)
+        if uploaded_ids:
+            log_sync(
+                "file_share_ts",
+                channel_id=channel_id,
+                ts=None,
+                source="pending",
+                post_id=post_id,
+                file_id=uploaded_ids[0],
+            )
     return file_ts
+
+
+def _apply_share_blocks(
+    *,
+    token: str,
+    channel_id: str,
+    ts: str,
+    adapted_text: str,
+    target_blocks: list[dict],
+    reply_broadcast: bool = False,
+) -> None:
+    """Put Block Kit on a native file share so it matches the source body."""
+    try:
+        post_message(
+            bot_token=token,
+            channel_id=channel_id,
+            msg_text=adapted_text,
+            update_ts=slack_message_ts(ts),
+            blocks=target_blocks,
+            reply_broadcast=reply_broadcast,
+        )
+    except Exception as exc:
+        _logger.warning(
+            "slack_write_share_blocks_failed",
+            extra={"channel_id": channel_id, "error": str(exc)},
+        )
 
 
 def _post_target_text(
@@ -147,6 +208,7 @@ def _post_target_text(
     file_notice: str,
     team_id: str | None,
     as_user: str | None,
+    post_id: str | None = None,
 ) -> tuple[str | None, str | None, str | None]:
     """Post target text (optional blocks), then optional threaded files."""
     post_kwargs: dict[str, Any] = {
@@ -178,11 +240,32 @@ def _post_target_text(
             reply_broadcast=file_broadcast,
             team_id=team_id,
             as_user=as_user,
+            post_id=post_id,
         )
 
     if as_user and ts:
         remember_message_echo(team_id, as_user, channel_id, ts)
     return ts, split_file_ts, as_user
+
+
+def _mentioned_users_from_envelope(envelope: dict[str, Any]) -> list[dict]:
+    """Mention rows from envelope ``people`` (author excluded)."""
+    people = envelope.get("people") or []
+    source_user_id = envelope.get("source_user_id")
+    out: list[dict] = []
+    for person in people:
+        uid = person.get("user_id")
+        if not uid or uid == source_user_id:
+            continue
+        out.append(
+            {
+                "user_id": uid,
+                "user_name": person.get("name") or uid,
+                "email": person.get("email"),
+                "user_profile_url": person.get("avatar_url"),
+            }
+        )
+    return out
 
 
 def slack_write_create(
@@ -206,6 +289,7 @@ def slack_write_create(
     file_refs = list(envelope.get("file_refs") or [])
     content_blocks = list(envelope.get("blocks") or [])
     images = list(envelope.get("images") or [])
+    post_id = envelope.get("post_id")
 
     bot_token = _bot_token_for(workspace)
     target_client = WebClient(token=bot_token)
@@ -231,8 +315,8 @@ def slack_write_create(
     write_token, posted_as = pick_write_token(workspace, mapped_user_id)
     use_customize = posted_as is None
 
-    mentioned_users: list[dict] = []
-    if source_client and msg_text:
+    mentioned_users = _mentioned_users_from_envelope(envelope)
+    if source_client and msg_text and "<@" in msg_text and not mentioned_users:
         mentioned_users = parse_mentioned_users(msg_text, source_client)
 
     adapted_text = msg_text
@@ -265,6 +349,32 @@ def slack_write_create(
         target_blocks = list(images)
 
     def _write(token: str, customize: bool, as_user: str | None) -> tuple[str | None, str | None, str | None]:
+        # User-token uploads are native file shares: caption and files on one
+        # message, like the source. Bot-token posts cannot do that, so they
+        # still split text-plus-file and use the code-ticked notice.
+        if file_refs and as_user:
+            comment = (adapted_text or "").strip() or None
+            file_ts = _upload_target_files(
+                token=token,
+                channel_id=sync_channel.channel_id,
+                files=file_refs,
+                initial_comment=comment,
+                thread_ts=thread_ts,
+                reply_broadcast=reply_broadcast,
+                team_id=workspace.team_id,
+                as_user=as_user,
+                post_id=post_id,
+            )
+            if file_ts and target_blocks:
+                _apply_share_blocks(
+                    token=token,
+                    channel_id=sync_channel.channel_id,
+                    ts=file_ts,
+                    adapted_text=adapted_text,
+                    target_blocks=target_blocks,
+                    reply_broadcast=reply_broadcast,
+                )
+            return file_ts, None, as_user
         if file_refs and not msg_text.strip() and not content_blocks:
             file_ts = _upload_target_files(
                 token=token,
@@ -275,6 +385,7 @@ def slack_write_create(
                 reply_broadcast=reply_broadcast,
                 team_id=workspace.team_id,
                 as_user=as_user,
+                post_id=post_id,
             )
             return file_ts, None, as_user
         return _post_target_text(
@@ -293,6 +404,7 @@ def slack_write_create(
             file_notice=file_notice,
             team_id=workspace.team_id,
             as_user=as_user,
+            post_id=post_id,
         )
 
     try:
@@ -363,7 +475,9 @@ def slack_write_edit(
     target_blocks: list[dict] = []
     source_ws = get_workspace_by_id(source_workspace_id) if source_workspace_id else None
     if source_client:
-        mentioned_users = parse_mentioned_users(msg_text, source_client)
+        mentioned_users = _mentioned_users_from_envelope(envelope)
+        if msg_text and "<@" in msg_text and not mentioned_users:
+            mentioned_users = parse_mentioned_users(msg_text, source_client)
         adapted_text = apply_mentioned_users(
             msg_text,
             source_client,

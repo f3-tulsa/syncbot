@@ -298,6 +298,7 @@ def build_home_tab(
     user_id: str | None = None,
     return_blocks: bool = False,
     workspace: Workspace | None = None,
+    content_hash: str | None = None,
 ) -> list[dict] | None:
     """Build and publish the App Home tab. If return_blocks is True, return block dicts and do not publish."""
     team_id = helpers.get_team_id_from_body(body)
@@ -371,7 +372,7 @@ def build_home_tab(
         if helpers.federation_enabled() and helpers.is_primary_workspace(team_id) and is_admin:
             _build_federation_section(blocks, workspace_record)
 
-    current_hash = _home_tab_content_hash(
+    current_hash = content_hash or _home_tab_content_hash(
         workspace_record,
         user_id,
         is_manager=is_manager,

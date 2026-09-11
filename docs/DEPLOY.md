@@ -200,7 +200,7 @@ Only fill the provider block that matches `CLOUD_PROVIDER`, and only fill the da
 
 | Variable | Notes |
 |----------|-------|
-| `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` (default `INFO`). |
+| `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` (default `INFO`). At DEBUG, logs include `sync.*` traces for message skip, pipeline fan-out, and file share timestamps. |
 | `PRIMARY_WORKSPACE` | Slack Team ID that unlocks Backup/Restore (and scopes DB reset). Takes effect after a redeploy. |
 | `ENABLE_DB_RESET` | `true` / `false` (default `false`). Shows the Reset Database button, and only on the primary workspace. |
 

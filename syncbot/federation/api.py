@@ -500,8 +500,8 @@ def handle_message(body: dict, fed_ws: schemas.FederatedWorkspace) -> tuple[int,
                 workspace_name = None
 
     text = _resolve_mentions_for_federated(text, workspace.id, remote_label_for_mentions)
-    # Target bot cannot conversations_info source C IDs; ticks may stay #Cid.
-    text = helpers.resolve_channel_references(text, ws_client, None)
+    # Target bot cannot conversations_info source C IDs; tick wire labels / raw ids only.
+    text = helpers.resolve_channel_references(text, None, None)
 
     try:
         thread_ts = None
@@ -543,8 +543,6 @@ def handle_message(body: dict, fed_ws: schemas.FederatedWorkspace) -> tuple[int,
         if mapped_local:
             envelope["mapped_user_id"] = mapped_local
         created = apply_target(envelope, sync_channel, workspace, thread_ts=thread_ts)
-        if post_id and created:
-            DbManager.create_records(created)
         ts = slack_message_ts(created[0].ts) if created else None
 
         _logger.info(
@@ -584,9 +582,8 @@ def handle_message_edit(body: dict, fed_ws: schemas.FederatedWorkspace) -> tuple
 
     remote_label = fed_ws.primary_workspace_name or fed_ws.name or "Remote"
     text = _resolve_mentions_for_federated(text, workspace.id, remote_label)
-    ws_client = WebClient(token=helpers.decrypt_bot_token(workspace.bot_token))
-    # Target bot cannot conversations_info source C IDs; ticks may stay #Cid.
-    text = helpers.resolve_channel_references(text, ws_client, None)
+    # Target bot cannot conversations_info source C IDs; tick wire labels / raw ids only.
+    text = helpers.resolve_channel_references(text, None, None)
 
     post_records = _get_post_records(post_id, sync_channel.id)
 

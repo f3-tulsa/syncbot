@@ -46,7 +46,7 @@ class TestSplitMessagePostMeta:
                     SimpleNamespace(post_id="child", sync_channel_id=2, ts=200.0),
                     SimpleNamespace(post_id="child", sync_channel_id=2, ts=300.0),
                 ],
-            ),
+            ) as pipeline,
             patch("handlers.message.helpers.get_user_info", return_value=("N", "http://i")),
             patch("handlers.message.helpers.get_mapped_target_user_id", return_value=None),
             patch("handlers.message.helpers.get_federated_workspace_for_sync", return_value=None),
@@ -65,22 +65,22 @@ class TestSplitMessagePostMeta:
         ):
             _handle_new_post(body, client, logger, ctx, [], direct_files)
 
-        assert len(created) == 3
-        assert {m.sync_channel_id for m in created} == {1, 2}
-        target_rows = [m for m in created if m.sync_channel_id == 2]
-        assert len(target_rows) == 2
-        assert target_rows[0].post_id == target_rows[1].post_id
-        assert {target_rows[0].ts, target_rows[1].ts} == {200.0, 300.0}
+        assert len(created) == 1
+        assert created[0].sync_channel_id == 1
+        assert created[0].ts == 100.0
+        envelope = pipeline.call_args.args[0]
+        assert envelope["post_id"] == created[0].post_id
+        assert envelope["file_refs"] == direct_files
 
     def test_thread_reply_text_plus_file_stores_file_ts_same_post_id(self):
         logger = MagicMock()
         client = MagicMock(spec=WebClient)
 
-        pm_src = SimpleNamespace(id=1, post_id="parent", ts=10.0)
-        pm_tgt = SimpleNamespace(id=2, post_id="parent", ts=20.0)
-        sc_source = SimpleNamespace(id=11, channel_id="C_SRC", sync_id=7)
+        pm_src = SimpleNamespace(id=1, post_id="parent", ts=10.0, source_workspace_id=10)
+        pm_tgt = SimpleNamespace(id=2, post_id="parent", ts=20.0, source_workspace_id=10)
+        sc_source = SimpleNamespace(id=11, channel_id="C_SRC", sync_id=7, publishes=True)
         ws_source = SimpleNamespace(id=10, workspace_name="A", bot_token="enc")
-        sc_target = SimpleNamespace(id=22, channel_id="C_TGT", sync_id=7)
+        sc_target = SimpleNamespace(id=22, channel_id="C_TGT", sync_id=7, publishes=True)
         ws_target = SimpleNamespace(id=20, workspace_name="B", bot_token="enc")
 
         post_records = [(pm_src, sc_source, ws_source), (pm_tgt, sc_target, ws_target)]
@@ -109,7 +109,7 @@ class TestSplitMessagePostMeta:
                     SimpleNamespace(post_id="child", sync_channel_id=22, ts=250.0),
                     SimpleNamespace(post_id="child", sync_channel_id=22, ts=350.0),
                 ],
-            ),
+            ) as pipeline,
             patch("handlers.message.helpers.get_user_info", return_value=("N", "http://i")),
             patch("handlers.message.helpers.get_mapped_target_user_id", return_value=None),
             patch("handlers.message.helpers.get_federated_workspace_for_sync", return_value=None),
@@ -128,11 +128,12 @@ class TestSplitMessagePostMeta:
         ):
             _handle_thread_reply(body, client, logger, ctx, [], direct_files)
 
-        assert len(created) == 3
-        target_rows = [m for m in created if m.sync_channel_id == 22]
-        assert len(target_rows) == 2
-        assert target_rows[0].post_id == target_rows[1].post_id
-        assert {target_rows[0].ts, target_rows[1].ts} == {250.0, 350.0}
+        assert len(created) == 1
+        assert created[0].sync_channel_id == 11
+        envelope = pipeline.call_args.args[0]
+        assert envelope["thread_post_id"] == "parent"
+        assert envelope["file_refs"] == direct_files
+        assert pipeline.call_args.kwargs["thread_parent_ts_by_channel"]["C_TGT"] == "20.000000"
 
 
 class TestFileOnlyThreadPostMeta:
@@ -140,11 +141,11 @@ class TestFileOnlyThreadPostMeta:
         logger = MagicMock()
         client = MagicMock(spec=WebClient)
 
-        pm_src = SimpleNamespace(id=1, post_id="parent", ts=10.0)
-        pm_tgt = SimpleNamespace(id=2, post_id="parent", ts=20.0)
-        sc_source = SimpleNamespace(id=11, channel_id="C_SRC", sync_id=7)
+        pm_src = SimpleNamespace(id=1, post_id="parent", ts=10.0, source_workspace_id=10)
+        pm_tgt = SimpleNamespace(id=2, post_id="parent", ts=20.0, source_workspace_id=10)
+        sc_source = SimpleNamespace(id=11, channel_id="C_SRC", sync_id=7, publishes=True)
         ws_source = SimpleNamespace(id=10, workspace_name="A", bot_token="enc")
-        sc_target = SimpleNamespace(id=22, channel_id="C_TGT", sync_id=7)
+        sc_target = SimpleNamespace(id=22, channel_id="C_TGT", sync_id=7, publishes=True)
         ws_target = SimpleNamespace(id=20, workspace_name="B", bot_token="enc")
 
         post_records = [(pm_src, sc_source, ws_source), (pm_tgt, sc_target, ws_target)]
@@ -198,7 +199,6 @@ class TestFileOnlyThreadPostMeta:
         assert envelope["people"][0]["user_id"] == "U1"
         assert pipeline.call_args.kwargs["thread_parent_ts_by_channel"]["C_TGT"] == "20.000000"
         assert pipeline.call_args.args[0]["file_refs"] == direct_files
-        assert len(created) == 2
-        target_rows = [m for m in created if m.sync_channel_id == 22]
-        assert len(target_rows) == 1
-        assert target_rows[0].ts == 350.0
+        assert len(created) == 1
+        assert created[0].sync_channel_id == 11
+        assert created[0].post_id == envelope["post_id"]

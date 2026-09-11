@@ -982,7 +982,7 @@ def _toggle_sync_status(
         [schemas.SyncChannel.id == my_sync_channel.id],
         {schemas.SyncChannel.status: target_status},
     )
-    helpers.invalidate_channel_memberships(my_sync_channel.channel_id)
+    helpers.invalidate_sync_fanout_for_syncs([sync_id])
 
     try:
         if workspace_record.bot_token:
@@ -1031,7 +1031,7 @@ def handle_pause_sync(body: dict, client: WebClient, logger: Logger, context: di
         confirm_action=actions.CONFIG_PAUSE_SYNC_CONFIRM,
         title="Pause Sync",
         button_label=":double_vertical_bar: Pause Sync",
-        warning=":double_vertical_bar: *Pause this Sync?*\n\nMessages, threads, and reactions will not sync until you Resume Sync.",
+        warning=":double_vertical_bar: *Pause this Sync?*\n\nMessages, threads, and reactions will not send or arrive on this Channel until you Resume Sync.",
         log_event="pause_sync",
     )
 
@@ -1261,7 +1261,7 @@ def handle_join_sync_submit(
         _logger.error(f"Failed to join channel sync {sync_id}: {e}")
         return
 
-    helpers.invalidate_channel_memberships(channel_id)
+    helpers.invalidate_sync_fanout_for_syncs([sync_id])
 
     # Same ordering as publish: the row has to exist before Slack announces the
     # bot joined, or the unconfigured-channel handler shows it the door.

@@ -45,7 +45,10 @@ class TestMessageSubtypeAllowlist:
             patch("handlers.message.run_claimed", side_effect=lambda _body, fn: fn()),
             patch("handlers.message.helpers.channel_has_membership", return_value=True),
             patch("handlers.message.helpers.origin_publishes_anywhere", return_value=True),
+            patch("handlers.message.helpers.iter_publish_targets", return_value=[object()]),
             patch("handlers.message.helpers.post_meta_exists_for_channel_ts", return_value=False),
+            patch("handlers.message.helpers.has_user_action_echo", return_value=False),
+            patch("handlers.message.helpers.take_user_action_echo", return_value=False),
         ):
             respond_to_message_event(body, MagicMock(), MagicMock(), {})
         thread_reply.assert_called_once()
@@ -63,7 +66,10 @@ class TestMessageSubtypeAllowlist:
             patch("handlers.message.run_claimed", side_effect=lambda _body, fn: fn()),
             patch("handlers.message.helpers.channel_has_membership", return_value=True),
             patch("handlers.message.helpers.origin_publishes_anywhere", return_value=True),
+            patch("handlers.message.helpers.iter_publish_targets", return_value=[object()]),
             patch("handlers.message.helpers.post_meta_exists_for_channel_ts", return_value=False),
+            patch("handlers.message.helpers.has_user_action_echo", return_value=False),
+            patch("handlers.message.helpers.take_user_action_echo", return_value=False),
         ):
             respond_to_message_event(body, MagicMock(), MagicMock(), {})
         new_post.assert_called_once()
@@ -75,12 +81,12 @@ class TestMessageSubtypeAllowlist:
             patch("handlers.message._is_own_bot_message", return_value=False),
             patch("handlers.message._build_file_context") as files,
             patch("handlers.message._handle_new_post") as new_post,
-            patch("handlers.message.run_claimed") as claimed,
+            patch("handlers.message.run_claimed", side_effect=lambda _body, fn: fn()) as claimed,
         ):
             respond_to_message_event(body, MagicMock(), MagicMock(), {})
         files.assert_not_called()
         new_post.assert_not_called()
-        claimed.assert_not_called()
+        claimed.assert_called_once()
 
     def test_message_replied_is_skipped(self):
         body = _message_body(subtype="message_replied", thread_ts="1.1")
@@ -88,12 +94,12 @@ class TestMessageSubtypeAllowlist:
             patch("handlers.message._is_own_bot_message", return_value=False),
             patch("handlers.message._handle_new_post") as new_post,
             patch("handlers.message._handle_thread_reply") as thread_reply,
-            patch("handlers.message.run_claimed") as claimed,
+            patch("handlers.message.run_claimed", side_effect=lambda _body, fn: fn()) as claimed,
         ):
             respond_to_message_event(body, MagicMock(), MagicMock(), {})
         new_post.assert_not_called()
         thread_reply.assert_not_called()
-        claimed.assert_not_called()
+        claimed.assert_called_once()
 
 
 class TestHostedFiles:
@@ -230,7 +236,6 @@ class TestFederationInboundReplyBroadcast:
             patch("federation.api.helpers.resolve_channel_references", side_effect=lambda text, *_a, **_k: text),
             patch("federation.api.WebClient"),
             patch("federation.api.apply_target", return_value=created) as apply,
-            patch.object(federation_api.DbManager, "create_records") as create,
         ):
             status, resp = federation_api.handle_message(body, fed_ws)
 
@@ -239,4 +244,3 @@ class TestFederationInboundReplyBroadcast:
         envelope = apply.call_args.args[0]
         assert envelope["reply_broadcast"] is True
         assert envelope["images"][0]["image_url"] == "https://gif.example/a.gif"
-        assert create.called

@@ -173,14 +173,26 @@ class TestTextPlusFileUpload:
         assert upload_files.call_args.kwargs["reply_broadcast"] is False
 
 
+def _stub_external_upload(client, *, file_id="F1"):
+    client.files_getUploadURLExternal.return_value = {
+        "file_id": file_id,
+        "upload_url": "https://files.slack.com/upload/v1/x",
+    }
+    client.files_completeUploadExternal.return_value = {"file": {"id": file_id}}
+
+
 class TestUploadReplyBroadcast:
-    def test_broadcast_uses_chat_update_not_upload_kwarg(self):
+    def test_broadcast_uses_chat_update_not_complete_kwarg(self):
         from helpers.files import upload_files_to_slack
 
         client = MagicMock()
-        client.files_upload_v2.return_value = {"file": {"id": "F1"}}
+        _stub_external_upload(client)
+        put = MagicMock()
+        put.status_code = 200
         with (
             patch("helpers.files.WebClient", return_value=client),
+            patch("helpers.files._read_local_file_bytes", return_value=b"pdf"),
+            patch("helpers.files.requests.post", return_value=put),
             patch("helpers.files._extract_file_message_ts", return_value="200.0"),
         ):
             upload_files_to_slack(
@@ -191,16 +203,20 @@ class TestUploadReplyBroadcast:
                 thread_ts="100.0",
                 reply_broadcast=True,
             )
-        assert "reply_broadcast" not in client.files_upload_v2.call_args.kwargs
+        assert "reply_broadcast" not in client.files_completeUploadExternal.call_args.kwargs
         client.chat_update.assert_called_once_with(channel="C1", ts="200.0", reply_broadcast=True)
 
     def test_no_broadcast_skips_chat_update(self):
         from helpers.files import upload_files_to_slack
 
         client = MagicMock()
-        client.files_upload_v2.return_value = {"file": {"id": "F1"}}
+        _stub_external_upload(client)
+        put = MagicMock()
+        put.status_code = 200
         with (
             patch("helpers.files.WebClient", return_value=client),
+            patch("helpers.files._read_local_file_bytes", return_value=b"pdf"),
+            patch("helpers.files.requests.post", return_value=put),
             patch("helpers.files._extract_file_message_ts", return_value="200.0"),
         ):
             upload_files_to_slack(
@@ -212,8 +228,54 @@ class TestUploadReplyBroadcast:
             )
         client.chat_update.assert_not_called()
 
+    def test_after_upload_runs_before_complete_share(self):
+        from helpers.files import upload_files_to_slack
+
+        client = MagicMock()
+        _stub_external_upload(client)
+        put = MagicMock()
+        put.status_code = 200
+        order: list[str] = []
+
+        def after(file_ids):
+            order.append("after_upload")
+            assert file_ids == ["F1"]
+
+        def complete(**_kwargs):
+            order.append("complete")
+            return {"file": {"id": "F1"}}
+
+        client.files_completeUploadExternal.side_effect = complete
+        with (
+            patch("helpers.files.WebClient", return_value=client),
+            patch("helpers.files._read_local_file_bytes", return_value=b"pdf"),
+            patch("helpers.files.requests.post", return_value=put),
+            patch("helpers.files._extract_file_message_ts", return_value="200.0"),
+        ):
+            upload_files_to_slack(
+                "xoxb",
+                "C1",
+                [{"path": "/tmp/a.pdf", "name": "a.pdf"}],
+                after_upload=after,
+            )
+        assert order == ["after_upload", "complete"]
+
 
 class TestExtractFileMessageTs:
+    def test_uses_upload_response_shares_without_files_info(self):
+        from helpers.files import _extract_file_message_ts
+
+        client = MagicMock()
+        upload = {
+            "file": {
+                "id": "F1",
+                "shares": {"public": {"C1": [{"ts": "200.0"}]}},
+            }
+        }
+        ts = _extract_file_message_ts(client, upload, "C1")
+        assert ts == "200.0"
+        client.files_info.assert_not_called()
+
     def test_prefers_share_matching_thread_ts(self):
         from helpers.files import _extract_file_message_ts
 
@@ -232,3 +294,87 @@ class TestExtractFileMessageTs:
         }
         ts = _extract_file_message_ts(client, {"file": {"id": "F1"}}, "C1", thread_ts="150.0")
         assert ts == "200.0"
+
+    def test_threaded_upload_skips_parent_share_ts(self):
+        from helpers.files import _extract_file_message_ts
+
+        client = MagicMock()
+        upload = {
+            "file": {
+                "id": "F1",
+                "shares": {
+                    "public": {
+                        "C1": [
+                            {"ts": "150.0"},
+                            {"ts": "200.0", "thread_ts": "150.0"},
+                        ]
+                    }
+                },
+            }
+        }
+        ts = _extract_file_message_ts(client, upload, "C1", thread_ts="150.0")
+        assert ts == "200.0"
+        client.files_info.assert_not_called()
+
+    def test_parent_only_upload_shares_poll_files_info_for_reply_ts(self):
+        from helpers.files import _extract_file_message_ts
+
+        client = MagicMock()
+        client.files_info.return_value = {
+            "file": {
+                "shares": {
+                    "public": {
+                        "C1": [
+                            {"ts": "150.0"},
+                            {"ts": "200.0", "thread_ts": "150.0"},
+                        ]
+                    }
+                }
+            }
+        }
+        upload = {"file": {"id": "F1", "shares": {"public": {"C1": [{"ts": "150.0"}]}}}}
+        with patch("helpers.files._time.sleep"):
+            ts = _extract_file_message_ts(client, upload, "C1", thread_ts="150.0")
+        assert ts == "200.0"
+        client.files_info.assert_called()
+
+    def test_channel_history_fallback_when_shares_never_appear(self):
+        from helpers.files import _extract_file_message_ts
+
+        client = MagicMock()
+        client.files_info.return_value = {"file": {"id": "F1", "shares": {}}}
+        client.conversations_history.return_value = {
+            "messages": [{"ts": "200.000000", "files": [{"id": "F1"}]}],
+        }
+        with patch("helpers.files._time.sleep"):
+            ts = _extract_file_message_ts(client, {"file": {"id": "F1"}}, "C1")
+        assert ts == "200.000000"
+
+    def test_thread_history_fallback_skips_parent_share(self):
+        from helpers.files import _extract_file_message_ts
+
+        client = MagicMock()
+        client.files_info.return_value = {"file": {"id": "F1", "shares": {}}}
+        client.conversations_replies.return_value = {
+            "messages": [
+                {"ts": "150.0", "files": [{"id": "F1"}]},
+                {"ts": "200.000000", "files": [{"id": "F1"}]},
+            ],
+        }
+        with patch("helpers.files._time.sleep"):
+            ts = _extract_file_message_ts(client, {"file": {"id": "F1"}}, "C1", thread_ts="150.0")
+        assert ts == "200.000000"
+
+    def test_retries_history_when_first_lookup_is_empty(self):
+        from helpers.files import _extract_file_message_ts
+
+        client = MagicMock()
+        client.files_info.return_value = {"file": {"id": "F1", "shares": {}}}
+        client.conversations_history.side_effect = [
+            {"messages": [{"ts": "199.0", "files": [{"id": "F_OTHER"}]}]},
+            {"messages": [{"ts": "200.000000", "files": [{"id": "F1"}]}]},
+        ]
+        with patch("helpers.files._time.sleep"):
+            ts = _extract_file_message_ts(client, {"file": {"id": "F1"}}, "C1")
+        assert ts == "200.000000"
+        assert client.conversations_history.call_count == 2

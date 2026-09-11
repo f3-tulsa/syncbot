@@ -19,6 +19,7 @@ from db.event_claims import (  # noqa: E402
     claim_event,
     complete_event,
     release_event,
+    run_claimed,
     slack_event_identity,
 )
 from db.schemas import ProcessedEvent  # noqa: E402
@@ -55,8 +56,11 @@ def pipeline_guards():
     with (
         patch("helpers.channel_has_membership", return_value=True),
         patch("helpers.origin_publishes_anywhere", return_value=True),
+        patch("helpers.iter_publish_targets", return_value=[object()]),
         patch("helpers.post_meta_exists_for_channel_ts", return_value=False),
+        patch("helpers.has_user_action_echo", return_value=False),
         patch("helpers.take_user_action_echo", return_value=False),
+        patch("handlers.message.helpers.complete_copy_ts_from_pending_share", return_value=None),
     ):
         yield
 
@@ -134,6 +138,18 @@ class TestClaimHelpers:
         assert results.count(True) == 1
         assert results.count(False) == 1
 
+    def test_work_returning_false_releases_claim(self, event_db):
+        calls: list[int] = []
+
+        def work() -> bool:
+            calls.append(1)
+            return False
+
+        body = {"event_id": "EvNotReady", "team_id": "T001"}
+        run_claimed(body, work)
+        run_claimed(body, work)
+        assert calls == [1, 1]
+
 
 class TestRespondToMessageEventDedup:
     def test_text_only_no_subtype_still_calls_new_post(self):
@@ -151,7 +167,7 @@ class TestRespondToMessageEventDedup:
         mock_new.assert_called_once()
 
     def test_no_subtype_with_files_skips_without_building_file_context(self):
-        body = _message_body()
+        body = _message_body(event_id="")
         body["event"]["files"] = [{"id": "F1", "mimetype": "image/jpeg"}]
 
         client = MagicMock()
@@ -167,6 +183,48 @@ class TestRespondToMessageEventDedup:
 
         mock_new.assert_not_called()
         build_fc.assert_not_called()
+
+    def test_pending_file_share_completes_claim_so_retry_is_noop(self, event_db):
+        body = _message_body()
+        body["event"]["files"] = [{"id": "F1", "mimetype": "image/jpeg"}]
+        with (
+            patch("handlers.message._is_own_bot_message", return_value=False) as own_bot,
+            patch("handlers.message._handle_new_post") as mock_new,
+            patch("handlers.message._build_file_context") as build_fc,
+        ):
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+
+        own_bot.assert_called_once()
+        mock_new.assert_not_called()
+        build_fc.assert_not_called()
+
+    def test_own_bot_file_share_records_pending_copy_ts(self, event_db):
+        body = _message_body(event_id="")
+        body["event"]["subtype"] = "file_share"
+        body["event"]["files"] = [{"id": "F1"}]
+        with (
+            patch("handlers.message._is_own_bot_message", return_value=True),
+            patch("handlers.message.helpers.complete_copy_ts_from_pending_share", return_value=True) as complete,
+            patch("handlers.message._handle_new_post") as mock_new,
+        ):
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+        complete.assert_called_once()
+        mock_new.assert_not_called()
+
+    def test_own_bot_pending_copy_not_ready_releases_claim(self, event_db):
+        body = _message_body()
+        body["event"]["subtype"] = "file_share"
+        body["event"]["files"] = [{"id": "F1"}]
+        with (
+            patch("handlers.message._is_own_bot_message", return_value=True),
+            patch("handlers.message.helpers.complete_copy_ts_from_pending_share", return_value=False) as complete,
+            patch("handlers.message._handle_new_post") as mock_new,
+        ):
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+        assert complete.call_count == 2
+        mock_new.assert_not_called()
 
     def test_file_share_subtype_still_calls_new_post(self):
         body = _message_body(event_id="")
@@ -188,6 +246,216 @@ class TestRespondToMessageEventDedup:
             respond_to_message_event(body, client, logger, context)
 
         mock_new.assert_called_once()
+
+    def test_user_token_file_id_echo_skips_file_share(self):
+        body = _message_body(event_id="")
+        body["event"]["subtype"] = "file_share"
+        body["event"]["files"] = [{"id": "F99"}]
+
+        with (
+            patch("handlers.message._is_own_bot_message", return_value=False),
+            patch("handlers.message.helpers.has_user_action_echo", return_value=True),
+            patch("handlers.message._handle_new_post") as mock_new,
+            patch("handlers.message._handle_thread_reply") as mock_reply,
+            patch("handlers.message._build_file_context") as build_fc,
+        ):
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+
+        mock_new.assert_not_called()
+        mock_reply.assert_not_called()
+        build_fc.assert_not_called()
+
+    def test_user_token_file_id_echo_skips_every_event_with_that_file(self):
+        body = _message_body(event_id="")
+        body["event"]["subtype"] = "file_share"
+        body["event"]["files"] = [{"id": "F99"}]
+        taken = []
+
+        def take(_team, _user, kind, fingerprint):
+            taken.append((kind, fingerprint))
+            return False
+
+        with (
+            patch("handlers.message._is_own_bot_message", return_value=False),
+            patch("handlers.message.helpers.has_user_action_echo", return_value=True) as has_echo,
+            patch("handlers.message.helpers.take_user_action_echo", side_effect=take),
+            patch("handlers.message._handle_new_post") as mock_new,
+            patch("handlers.message._handle_thread_reply") as mock_reply,
+        ):
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+            body["event"]["subtype"] = "message_changed"
+            body["event"]["message"] = {"files": [{"id": "F99"}], "ts": body["event"]["ts"]}
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+
+        assert has_echo.call_count == 2
+        assert taken == []
+        mock_new.assert_not_called()
+        mock_reply.assert_not_called()
+
+    def test_user_token_message_echo_skips_without_consuming(self):
+        body = _message_body(event_id="")
+        peeked = []
+
+        def has_echo(_team, _user, kind, fingerprint):
+            peeked.append((kind, fingerprint))
+            return kind == "message"
+
+        with (
+            patch("handlers.message._is_own_bot_message", return_value=False),
+            patch("handlers.message.helpers.has_user_action_echo", side_effect=has_echo),
+            patch("handlers.message.helpers.take_user_action_echo") as take,
+            patch("handlers.message._handle_new_post") as mock_new,
+            patch("handlers.message._handle_message_edit") as mock_edit,
+        ):
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+            body["event"]["subtype"] = "message_changed"
+            body["event"]["message"] = {"text": "Hello", "ts": body["event"]["ts"]}
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+
+        assert ("message", "C001:1234567890.000001") in peeked
+        take.assert_not_called()
+        mock_new.assert_not_called()
+        mock_edit.assert_not_called()
+
+    def test_file_share_with_own_thread_ts_is_new_post(self):
+        body = _message_body(event_id="")
+        body["event"]["subtype"] = "file_share"
+        body["event"]["thread_ts"] = body["event"]["ts"]
+        body["event"]["files"] = [{"id": "F1", "mimetype": "image/jpeg", "timestamp": 1234567890}]
+
+        with (
+            patch("handlers.message._is_own_bot_message", return_value=False),
+            patch("handlers.message._handle_new_post") as mock_new,
+            patch("handlers.message._handle_thread_reply") as mock_reply,
+            patch(
+                "handlers.message._build_file_context",
+                return_value=([], [{"path": "/tmp/x", "name": "x.jpg"}]),
+            ),
+        ):
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+
+        mock_new.assert_called_once()
+        mock_reply.assert_not_called()
+
+    def test_thread_reply_with_parent_files_is_not_pending_file_share(self):
+        body = _message_body(event_id="")
+        body["event"]["ts"] = "1234567890.000002"
+        body["event"]["thread_ts"] = "1234567890.000001"
+        body["event"]["files"] = [{"id": "F99"}]
+
+        with (
+            patch("handlers.message._is_own_bot_message", return_value=False),
+            patch("handlers.message._handle_new_post") as mock_new,
+            patch("handlers.message._handle_thread_reply") as mock_reply,
+            patch("handlers.message._build_file_context", return_value=([], [])) as build_fc,
+        ):
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+
+        mock_reply.assert_called_once()
+        mock_new.assert_not_called()
+        assert "files" not in build_fc.call_args.args[0]["event"]
+
+    def test_thread_reply_with_parent_file_echo_still_syncs(self):
+        body = _message_body(event_id="")
+        body["event"]["ts"] = "1234567890.000002"
+        body["event"]["thread_ts"] = "1234567890.000001"
+        body["event"]["files"] = [{"id": "F99"}]
+
+        with (
+            patch("handlers.message._is_own_bot_message", return_value=False),
+            patch("handlers.message.helpers.has_user_action_echo", side_effect=lambda *_a, **_k: _a[2] == "file"),
+            patch("handlers.message._handle_new_post") as mock_new,
+            patch("handlers.message._handle_thread_reply") as mock_reply,
+            patch("handlers.message._build_file_context", return_value=([], [])),
+        ):
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+
+        mock_reply.assert_called_once()
+        mock_new.assert_not_called()
+
+    def test_thread_file_share_still_syncs_with_files(self):
+        body = _message_body(event_id="")
+        body["event"]["subtype"] = "file_share"
+        body["event"]["ts"] = "1234567890.000002"
+        body["event"]["thread_ts"] = "1234567890.000001"
+        body["event"]["files"] = [{"id": "F_NEW"}]
+
+        with (
+            patch("handlers.message._is_own_bot_message", return_value=False),
+            patch("handlers.message._handle_new_post") as mock_new,
+            patch("handlers.message._handle_thread_reply") as mock_reply,
+            patch(
+                "handlers.message._build_file_context",
+                return_value=([], [{"path": "/tmp/x", "name": "x.jpg"}]),
+            ) as build_fc,
+        ):
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+
+        mock_reply.assert_called_once()
+        mock_new.assert_not_called()
+        assert build_fc.call_args.args[0]["event"]["files"] == [{"id": "F_NEW"}]
+
+    def test_thread_file_share_upload_false_is_text_reply(self):
+        body = _message_body(event_id="")
+        body["event"]["subtype"] = "file_share"
+        body["event"]["upload"] = False
+        body["event"]["ts"] = "1234567890.000002"
+        body["event"]["thread_ts"] = "1234567890.000001"
+        body["event"]["files"] = [{"id": "F99"}]
+
+        with (
+            patch("handlers.message._is_own_bot_message", return_value=False),
+            patch("handlers.message._handle_new_post") as mock_new,
+            patch("handlers.message._handle_thread_reply") as mock_reply,
+            patch("handlers.message._build_file_context", return_value=([], [])) as build_fc,
+        ):
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+
+        mock_reply.assert_called_once()
+        mock_new.assert_not_called()
+        assert "files" not in build_fc.call_args.args[0]["event"]
+
+    def test_thread_file_share_upload_false_not_skipped_as_file_echo(self):
+        body = _message_body(event_id="")
+        body["event"]["subtype"] = "file_share"
+        body["event"]["upload"] = False
+        body["event"]["ts"] = "1234567890.000002"
+        body["event"]["thread_ts"] = "1234567890.000001"
+        body["event"]["files"] = [{"id": "F99"}]
+
+        with (
+            patch("handlers.message._is_own_bot_message", return_value=False),
+            patch("handlers.message.helpers.has_user_action_echo", side_effect=lambda *_a, **_k: _a[2] == "file"),
+            patch("handlers.message._handle_new_post") as mock_new,
+            patch("handlers.message._handle_thread_reply") as mock_reply,
+            patch("handlers.message._build_file_context", return_value=([], [])),
+        ):
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+
+        mock_reply.assert_called_once()
+        mock_new.assert_not_called()
+
+    def test_thread_reply_without_parent_releases_claim(self, event_db):
+        body = _message_body()
+        body["event"]["ts"] = "1234567890.000002"
+        body["event"]["thread_ts"] = "1234567890.000001"
+        lookups = {"n": 0}
+
+        def _no_parent(*_a, **_k):
+            lookups["n"] += 1
+            return []
+
+        with (
+            patch("handlers.message._is_own_bot_message", return_value=False),
+            patch("handlers.message.helpers.get_post_records", side_effect=_no_parent),
+            patch("handlers.message._build_file_context", return_value=([], [])),
+            patch("handlers.message._handle_new_post") as mock_new,
+        ):
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+
+        assert lookups["n"] == 2
+        mock_new.assert_not_called()
 
     def test_duplicate_event_id_syncs_once(self, event_db):
         body = _message_body()
@@ -236,7 +504,7 @@ class TestRespondToMessageEventDedup:
 
         with (
             patch("handlers.message._is_own_bot_message", return_value=False),
-            patch("handlers.message._parse_event_fields") as parse,
+            patch("handlers.message._parse_event_fields_light") as parse,
             patch("handlers.message._handle_message_edit") as mock_edit,
             patch("handlers.message._build_file_context", return_value=([], [])),
         ):
@@ -244,6 +512,13 @@ class TestRespondToMessageEventDedup:
                 "event_subtype": "message_changed",
                 "thread_ts": None,
                 "msg_text": "edited",
+                "channel_id": "C001",
+                "user_id": "U001",
+                "team_id": "T001",
+                "ts": "1234567890.000001",
+                "mentioned_users": [],
+                "content_blocks": [],
+                "reply_broadcast": False,
             }
             respond_to_message_event(body, client, logger, {})
             respond_to_message_event(body, client, logger, {})
@@ -259,7 +534,8 @@ class TestRespondToMessageEventDedup:
 
         with (
             patch("handlers.message._is_own_bot_message", return_value=False),
-            patch("handlers.message._parse_event_fields") as parse,
+            patch("handlers.message._parse_event_fields_light") as parse,
+            patch("handlers.message._try_handle_reaction_notice_delete", return_value=False),
             patch("handlers.message._handle_message_delete") as mock_delete,
             patch("handlers.message._build_file_context", return_value=([], [])),
         ):
@@ -267,6 +543,13 @@ class TestRespondToMessageEventDedup:
                 "event_subtype": "message_deleted",
                 "thread_ts": None,
                 "msg_text": "",
+                "channel_id": "C001",
+                "user_id": "U001",
+                "team_id": "T001",
+                "ts": "1234567890.000001",
+                "mentioned_users": [],
+                "content_blocks": [],
+                "reply_broadcast": False,
             }
             respond_to_message_event(body, client, logger, {})
             respond_to_message_event(body, client, logger, {})
@@ -281,7 +564,7 @@ class TestRespondToMessageEventDedup:
 
         with (
             patch("handlers.message._is_own_bot_message", return_value=False),
-            patch("handlers.message._parse_event_fields") as parse,
+            patch("handlers.message._parse_event_fields_light") as parse,
             patch("handlers.message._handle_thread_reply") as mock_reply,
             patch("handlers.message._build_file_context", return_value=([], [])),
         ):
@@ -289,11 +572,35 @@ class TestRespondToMessageEventDedup:
                 "event_subtype": None,
                 "thread_ts": "1234567890.000000",
                 "msg_text": "Hello",
+                "channel_id": "C001",
+                "user_id": "U001",
+                "team_id": "T001",
+                "ts": "1234567890.000001",
+                "mentioned_users": [],
+                "content_blocks": [],
+                "reply_broadcast": False,
             }
             respond_to_message_event(body, client, logger, {})
             respond_to_message_event(body, client, logger, {})
 
         mock_reply.assert_called_once()
+
+    def test_no_publish_targets_skips_enrich_and_still_creates_origin(self):
+        client = MagicMock()
+        logger = MagicMock()
+
+        with (
+            patch("handlers.message._is_own_bot_message", return_value=False),
+            patch("helpers.iter_publish_targets", return_value=[]),
+            patch("handlers.message._enrich_event_fields_for_sync") as enrich,
+            patch("handlers.message._handle_new_post") as mock_new,
+            patch("handlers.message._build_file_context") as build_fc,
+        ):
+            respond_to_message_event(_message_body(event_id=""), client, logger, {})
+
+        enrich.assert_not_called()
+        build_fc.assert_not_called()
+        mock_new.assert_called_once()
 
 
 class TestHandleReactionClaim:
@@ -309,22 +616,37 @@ class TestHandleReactionClaim:
             },
         }
 
-    def test_reaction_removed_is_noop_without_claim(self, event_db):
+    def test_reaction_removed_still_claims(self, event_db):
         body = self._reaction_body()
         body["event"]["type"] = "reaction_removed"
         with patch("handlers.reaction_event.run_claimed") as mock_run:
             handle_reaction(body, MagicMock(), MagicMock(), {})
-        mock_run.assert_not_called()
+        mock_run.assert_called_once()
 
-    def test_reaction_without_post_meta_does_not_claim(self, event_db):
+    def test_reaction_without_post_meta_releases_claim_for_retry(self, event_db):
+        body = self._reaction_body()
+        records = [(MagicMock(), MagicMock(), MagicMock())]
+        with (
+            patch("handlers.reaction_event.helpers.get_own_bot_user_id", return_value="UBOT"),
+            patch("handlers.reaction_event.helpers.get_post_records", side_effect=[[], records]),
+            patch("handlers.reaction_event._sync_reaction_records") as mock_sync,
+        ):
+            handle_reaction(body, MagicMock(), MagicMock(), {})
+            handle_reaction(body, MagicMock(), MagicMock(), {})
+        mock_sync.assert_called_once()
+
+    def test_unconfigured_channel_skips_post_meta_and_completes_claim(self, event_db):
         body = self._reaction_body()
         with (
             patch("handlers.reaction_event.helpers.get_own_bot_user_id", return_value="UBOT"),
-            patch("handlers.reaction_event.helpers.get_post_records", return_value=[]),
-            patch("handlers.reaction_event.run_claimed") as mock_run,
+            patch("helpers.channel_has_membership", return_value=False),
+            patch("handlers.reaction_event.helpers.get_post_records") as post_meta,
+            patch("handlers.reaction_event._sync_reaction_records") as mock_sync,
         ):
             handle_reaction(body, MagicMock(), MagicMock(), {})
-        mock_run.assert_not_called()
+            handle_reaction(body, MagicMock(), MagicMock(), {})
+        post_meta.assert_not_called()
+        mock_sync.assert_not_called()
 
     def test_reaction_added_claims_before_side_effects(self, event_db):
         body = self._reaction_body()
@@ -418,3 +740,20 @@ class TestHandleReactionEchoSkip:
             handle_reaction(body, MagicMock(), MagicMock(), {})
 
         sync_mock.assert_not_called()
+
+
+class TestEventIsNewFileShare:
+    def test_upload_false_is_later_share(self):
+        from helpers.files import event_is_new_file_share
+
+        assert event_is_new_file_share({"subtype": "file_share", "upload": False}) is False
+
+    def test_omitted_upload_is_new(self):
+        from helpers.files import event_is_new_file_share
+
+        assert event_is_new_file_share({"subtype": "file_share"}) is True
+
+    def test_plain_message_is_not(self):
+        from helpers.files import event_is_new_file_share
+
+        assert event_is_new_file_share({"files": [{"id": "F1"}]}) is False

@@ -55,14 +55,19 @@ def _get_groups_for_workspace(workspace_id: int) -> list[tuple[WorkspaceGroup, W
             WorkspaceGroupMember.deleted_at.is_(None),
         ],
     )
+    if not members:
+        return []
+    group_ids = [m.group_id for m in members]
+    groups = DbManager.find_records(
+        WorkspaceGroup,
+        [WorkspaceGroup.id.in_(group_ids), WorkspaceGroup.status == "active"],
+    )
+    groups_by_id = {g.id: g for g in groups}
     results: list[tuple[WorkspaceGroup, WorkspaceGroupMember]] = []
     for member in members:
-        groups = DbManager.find_records(
-            WorkspaceGroup,
-            [WorkspaceGroup.id == member.group_id, WorkspaceGroup.status == "active"],
-        )
-        if groups:
-            results.append((groups[0], member))
+        group = groups_by_id.get(member.group_id)
+        if group:
+            results.append((group, member))
     return results
 
 

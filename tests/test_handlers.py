@@ -118,6 +118,23 @@ class TestParseEventFields:
         assert ctx["event_subtype"] == "message_deleted"
         assert ctx["ts"] == "1234567890.000001"
 
+    def test_file_share_thread_ts_equal_to_ts_is_top_level(self):
+        body = {
+            "team_id": "T001",
+            "event": {
+                "type": "message",
+                "subtype": "file_share",
+                "channel": "C001",
+                "user": "U001",
+                "text": "photo",
+                "ts": "1234567890.000001",
+                "thread_ts": "1234567890.000001",
+            },
+        }
+        ctx = _parse_event_fields(body, self._make_client())
+        assert ctx["thread_ts"] is None
+        assert ctx["ts"] == "1234567890.000001"
+
 
 # -----------------------------------------------------------------------
 # EventContext TypedDict

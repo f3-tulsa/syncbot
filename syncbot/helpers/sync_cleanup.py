@@ -29,10 +29,11 @@ _logger = logging.getLogger(__name__)
 
 
 def _invalidate_channel_memberships(channel_ids) -> None:
-    """Drop cached membership entries for *channel_ids*."""
+    """Drop cached membership and publish-target entries for *channel_ids*."""
     for channel_id in channel_ids:
         if channel_id:
             _cache_delete_prefix(f"channel_memberships:{channel_id}:")
+            _cache_delete_prefix(f"publish_targets:{channel_id}")
 
 
 def purge_sync(sync_id: int) -> None:
@@ -77,9 +78,20 @@ def purge_sync_channels(channels) -> None:
     """Hard-delete specific ``SyncChannel`` rows and their ``post_meta``.
 
     Used when a workspace leaves a sync that other workspaces still use, so the
-    parent ``Sync`` must survive. Also invalidates the fan-out cache, which the
-    call sites previously forgot.
+    parent ``Sync`` must survive. Invalidates fan-out for every Channel in the
+    same syncs, including peers that still publish, so Leave stops delivery on
+    this container instead of waiting for the 60s cache TTL.
     """
+    channels = list(channels)
+    sync_ids = {channel.sync_id for channel in channels if getattr(channel, "sync_id", None)}
+    fanout_ids = {channel.channel_id for channel in channels if channel.channel_id}
+    if sync_ids:
+        peers = DbManager.find_records(
+            schemas.SyncChannel,
+            [schemas.SyncChannel.sync_id.in_(list(sync_ids))],
+        )
+        fanout_ids.update(channel.channel_id for channel in peers if channel.channel_id)
+
     for channel in channels:
         DbManager.delete_records(
             schemas.PostMeta,
@@ -90,7 +102,7 @@ def purge_sync_channels(channels) -> None:
             [schemas.SyncChannel.id == channel.id],
         )
 
-    _invalidate_channel_memberships(channel.channel_id for channel in channels)
+    _invalidate_channel_memberships(fanout_ids)
 
 
 def purge_workspace(workspace_id: int) -> None:

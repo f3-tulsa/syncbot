@@ -18,6 +18,7 @@ from sqlalchemy import MetaData, Table, delete, select
 
 import constants
 from db import DbManager, get_engine, schemas
+from helpers.user_action_echo import post_meta_ts, slack_message_ts
 from helpers.workspace import get_workspace_by_id
 
 _logger = logging.getLogger(__name__)
@@ -116,7 +117,7 @@ def _records_to_list(records: list, cls: type) -> list[dict]:
             if isinstance(v, datetime):
                 v = v.isoformat()
             elif isinstance(v, Decimal):
-                v = float(v)
+                v = slack_message_ts(v) if k == "ts" else float(v)
             d[k] = v
         out.append(d)
     return out
@@ -249,7 +250,7 @@ def restore_full_backup(
                     except ValueError:
                         kwargs[k] = v
                 elif k == "ts" and v is not None:
-                    kwargs[k] = Decimal(str(v))
+                    kwargs[k] = post_meta_ts(v)
                 else:
                     kwargs[k] = v
             # Legacy backups use the pre-003 role name. Without this the Home tab
@@ -370,7 +371,7 @@ def build_migration_export(workspace_id: int, include_source_instance: bool = Tr
             post_meta_by_key[key] = [
                 {
                     "post_id": post_meta.post_id,
-                    "ts": float(post_meta.ts),
+                    "ts": slack_message_ts(post_meta.ts),
                     "kind": getattr(post_meta, "kind", constants.POST_META_KIND_MESSAGE)
                     or constants.POST_META_KIND_MESSAGE,
                     "parent_post_id": getattr(post_meta, "parent_post_id", None),
@@ -589,7 +590,7 @@ def import_migration_data(
                 schemas.PostMeta(
                     post_id=post_meta["post_id"],
                     sync_channel_id=new_sync_channel.id,
-                    ts=Decimal(str(post_meta["ts"])),
+                    ts=post_meta_ts(post_meta["ts"]),
                     kind=post_meta.get("kind") or constants.POST_META_KIND_MESSAGE,
                     parent_post_id=post_meta.get("parent_post_id"),
                     reaction=post_meta.get("reaction"),

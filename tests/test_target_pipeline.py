@@ -196,6 +196,54 @@ def test_ordinary_file_share_is_one_upload_without_message_post():
     upload.assert_called_once()
     assert upload.call_args.kwargs["bot_token"] == "xoxp-user"
     assert upload.call_args.kwargs["thread_ts"] is None
+    assert upload.call_args.kwargs["initial_comment"] is None
+
+
+def test_user_token_text_plus_file_embeds_caption_on_the_same_message():
+    with (
+        patch("helpers.slack_write.decrypt_bot_token", return_value="xoxb-bot"),
+        patch("helpers.slack_write.get_user_token", return_value="xoxp-user"),
+        patch("helpers.slack_write.WebClient"),
+        patch("helpers.workspace.get_workspace_by_id", return_value=None),
+        patch("helpers.slack_write.post_message") as post,
+        patch("helpers.slack_write.upload_files_to_slack", return_value=(None, "20.0")) as upload,
+        patch("helpers.slack_write.remember_user_action"),
+    ):
+        result = slack_write_create(
+            envelope=_envelope(text="Check this out", file_refs=[{"path": "/tmp/a.png", "name": "a.png"}]),
+            sync_channel=_sync_channel(),
+            workspace=_workspace(),
+        )
+
+    assert result == ("20.0", None, "U_TARGET")
+    post.assert_not_called()
+    upload.assert_called_once()
+    assert upload.call_args.kwargs["bot_token"] == "xoxp-user"
+    assert upload.call_args.kwargs["initial_comment"] == "Check this out"
+    assert upload.call_args.kwargs["thread_ts"] is None
+
+
+def test_user_token_thread_reply_file_embeds_on_the_parent_thread():
+    with (
+        patch("helpers.slack_write.decrypt_bot_token", return_value="xoxb-bot"),
+        patch("helpers.slack_write.get_user_token", return_value="xoxp-user"),
+        patch("helpers.slack_write.WebClient"),
+        patch("helpers.workspace.get_workspace_by_id", return_value=None),
+        patch("helpers.slack_write.post_message") as post,
+        patch("helpers.slack_write.upload_files_to_slack", return_value=(None, "35.0")) as upload,
+        patch("helpers.slack_write.remember_user_action"),
+    ):
+        result = slack_write_create(
+            envelope=_envelope(text="see attached", file_refs=[{"path": "/tmp/a.pdf", "name": "a.pdf"}]),
+            sync_channel=_sync_channel(),
+            workspace=_workspace(),
+            thread_ts="20.000000",
+        )
+
+    assert result == ("35.0", None, "U_TARGET")
+    post.assert_not_called()
+    assert upload.call_args.kwargs["thread_ts"] == "20.000000"
+    assert upload.call_args.kwargs["initial_comment"] == "see attached"
 
 
 def test_block_body_with_file_splits_and_broadcasts_file_reply():
@@ -228,6 +276,78 @@ def test_block_body_with_file_splits_and_broadcasts_file_reply():
     assert post.call_args.kwargs["blocks"] == blocks
     assert upload.call_args.kwargs["thread_ts"] == "10.0"
     assert upload.call_args.kwargs["reply_broadcast"] is True
+
+
+def test_user_token_file_with_blocks_updates_the_native_share():
+    source_client = MagicMock()
+    blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": "hello"}}]
+    with (
+        patch("helpers.slack_write.decrypt_bot_token", return_value="xoxb-bot"),
+        patch("helpers.slack_write.get_user_token", return_value="xoxp-user"),
+        patch("helpers.slack_write.WebClient"),
+        patch("helpers.workspace.get_workspace_by_id", return_value=None),
+        patch("helpers.slack_write.parse_mentioned_users", return_value=[]),
+        patch("helpers.slack_write.apply_mentioned_users", side_effect=lambda text, *_a, **_k: text),
+        patch("helpers.slack_write.resolve_channel_references", side_effect=lambda text, *_a, **_k: text),
+        patch("helpers.slack_write.build_target_blocks", return_value=blocks),
+        patch("helpers.slack_write.post_message") as post,
+        patch("helpers.slack_write.upload_files_to_slack", return_value=(None, "20.0")) as upload,
+        patch("helpers.slack_write.remember_user_action"),
+    ):
+        result = slack_write_create(
+            envelope=_envelope(
+                blocks=blocks,
+                file_refs=[{"path": "/tmp/a.pdf", "name": "a.pdf"}],
+            ),
+            sync_channel=_sync_channel(),
+            workspace=_workspace(),
+            source_client=source_client,
+        )
+
+    assert result == ("20.0", None, "U_TARGET")
+    upload.assert_called_once()
+    assert upload.call_args.kwargs["initial_comment"] == "hello"
+    post.assert_called_once()
+    assert post.call_args.kwargs["bot_token"] == "xoxp-user"
+    assert post.call_args.kwargs["update_ts"] == "20.000000"
+    assert post.call_args.kwargs["blocks"] == blocks
+    assert post.call_args.kwargs.get("reply_broadcast") in (None, False)
+
+
+def test_user_token_thread_broadcast_file_with_blocks_keeps_broadcast():
+    source_client = MagicMock()
+    blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": "hello"}}]
+    with (
+        patch("helpers.slack_write.decrypt_bot_token", return_value="xoxb-bot"),
+        patch("helpers.slack_write.get_user_token", return_value="xoxp-user"),
+        patch("helpers.slack_write.WebClient"),
+        patch("helpers.workspace.get_workspace_by_id", return_value=None),
+        patch("helpers.slack_write.parse_mentioned_users", return_value=[]),
+        patch("helpers.slack_write.apply_mentioned_users", side_effect=lambda text, *_a, **_k: text),
+        patch("helpers.slack_write.resolve_channel_references", side_effect=lambda text, *_a, **_k: text),
+        patch("helpers.slack_write.build_target_blocks", return_value=blocks),
+        patch("helpers.slack_write.post_message") as post,
+        patch("helpers.slack_write.upload_files_to_slack", return_value=(None, "35.0")) as upload,
+        patch("helpers.slack_write.remember_user_action"),
+    ):
+        result = slack_write_create(
+            envelope=_envelope(
+                blocks=blocks,
+                file_refs=[{"path": "/tmp/a.pdf", "name": "a.pdf"}],
+                reply_broadcast=True,
+            ),
+            sync_channel=_sync_channel(),
+            workspace=_workspace(),
+            source_client=source_client,
+            thread_ts="20.000000",
+        )
+
+    assert result == ("35.0", None, "U_TARGET")
+    assert upload.call_args.kwargs["thread_ts"] == "20.000000"
+    assert upload.call_args.kwargs["reply_broadcast"] is True
+    assert post.call_args.kwargs["update_ts"] == "35.000000"
+    assert post.call_args.kwargs["reply_broadcast"] is True
+    assert post.call_args.kwargs["blocks"] == blocks
 
 
 @pytest.mark.parametrize(
@@ -285,7 +405,11 @@ def test_build_envelope_carries_post_id_and_people():
 
 
 def test_apply_target_does_not_unthread_a_reply():
-    with patch("helpers.sync_apply.slack_write_create") as write:
+    with (
+        patch("helpers.sync_apply.get_live_sync_channel", side_effect=lambda sc: sc),
+        patch("helpers.sync_apply.slack_write_create") as write,
+        patch("helpers.sync_apply.DbManager.create_records"),
+    ):
         created = apply_target(
             _envelope(thread_post_id="PARENT"),
             _sync_channel(),
@@ -297,9 +421,13 @@ def test_apply_target_does_not_unthread_a_reply():
 
 
 def test_apply_target_records_sticky_posted_as_user():
-    with patch(
-        "helpers.sync_apply.slack_write_create",
-        return_value=("10.0", None, "U_TARGET"),
+    with (
+        patch("helpers.sync_apply.get_live_sync_channel", side_effect=lambda sc: sc),
+        patch(
+            "helpers.sync_apply.slack_write_create",
+            return_value=("10.0", None, "U_TARGET"),
+        ),
+        patch("helpers.sync_apply.DbManager.create_records") as persist,
     ):
         created = apply_target(
             _envelope(),
@@ -310,6 +438,7 @@ def test_apply_target_records_sticky_posted_as_user():
     assert len(created) == 1
     assert created[0].posted_as_user_id == "U_TARGET"
     assert created[0].source_user_id == "U_SOURCE"
+    persist.assert_called_once()
 
 
 def test_run_sync_pipeline_applies_once_per_unique_target():
@@ -339,6 +468,39 @@ def test_federation_images_accept_block_kit_or_wire_shape():
     wire = [{"url": "https://gif.example/a.gif", "alt_text": "gif"}]
     assert federation_image_payloads(blocks) == wire
     assert federation_image_payloads(wire) == wire
+
+
+def test_user_token_file_create_remembers_file_ids_from_after_upload():
+    def fake_upload(**kwargs):
+        after = kwargs.get("after_upload")
+        res = {"file": {"id": "F99"}, "files": [{"id": "F99"}]}
+        if after:
+            after(["F99"])
+        after_ts = kwargs.get("after_share_ts")
+        if after_ts:
+            after_ts("200.000000")
+        return res, "200.000000"
+
+    with (
+        patch("helpers.slack_write.decrypt_bot_token", return_value="xoxb-bot"),
+        patch("helpers.slack_write.get_user_token", return_value="xoxp-user"),
+        patch("helpers.slack_write.WebClient"),
+        patch("helpers.workspace.get_workspace_by_id", return_value=None),
+        patch("helpers.slack_write.post_message") as post,
+        patch("helpers.slack_write.upload_files_to_slack", side_effect=fake_upload),
+        patch("helpers.slack_write.remember_user_action") as remember,
+    ):
+        slack_write_create(
+            envelope=_envelope(text="Check this out", file_refs=[{"path": "/tmp/a.png", "name": "a.png"}]),
+            sync_channel=_sync_channel(),
+            workspace=_workspace(),
+        )
+
+    post.assert_not_called()
+    assert remember.call_args_list == [
+        call("T_TARGET", "U_TARGET", "file", "F99"),
+        call("T_TARGET", "U_TARGET", "message", "C_TARGET:200.000000"),
+    ]
 
 
 def test_caption_only_file_falls_back_to_bot_upload_when_user_token_fails():
